@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QGIS VR Photogrammetry - Stereoscopic Workstation</title>
+    <link rel="stylesheet" href="css/style.css">
+    <!-- Import map for modern Three.js modules -->
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+        }
+    }
+    </script>
+</head>
+<body>
+    <div id="canvas-container"></div>
+
+    <!-- Desktop 2D / HUD Overlay -->
+    <div class="ui-overlay" id="desktop-ui">
+        <!-- Top Bar -->
+        <header class="top-bar">
+            <div class="branding">
+                <span class="logo-badge">VR-Stereo</span>
+                <div class="title-group">
+                    <h1>Stereoscopic Photogrammetric Station</h1>
+                    <span>Digital Stereoplotter Engine for Meta Quest 2 / QGIS</span>
+                </div>
+            </div>
+
+            <div class="mode-selectors">
+                <!-- Stereo Mode Selector for Desktop -->
+                <div class="btn-group" id="display-mode-group">
+                    <button class="btn-toggle active" data-mode="mono">Mono</button>
+                    <button class="btn-toggle" data-mode="sbs">Side-by-Side</button>
+                    <button class="btn-toggle" data-mode="anaglyph">Anaglyph (Red/Cyan)</button>
+                </div>
+
+                <!-- Custom Image Upload -->
+                <button class="btn-action" id="btn-custom-pair" title="Load custom Left and Right stereo images">
+                    📂 Load Stereo Pair
+                </button>
+                <input type="file" id="file-left-input" accept="image/png,image/jpeg,image/webp" style="display:none">
+                <input type="file" id="file-right-input" accept="image/png,image/jpeg,image/webp" style="display:none">
+
+                <!-- Export Data -->
+                <button class="btn-action" id="btn-export-geojson">
+                    📥 Export GeoJSON
+                </button>
+            </div>
+        </header>
+
+        <!-- Main Layout with Telemetry & Vector Digitizer -->
+        <div class="main-layout">
+            <!-- Left Panel: Real-time Photogrammetric Telemetry -->
+            <aside class="panel">
+                <h2>Photogrammetric Telemetry</h2>
+                <div class="telemetry-grid">
+                    <div class="telemetry-card">
+                        <div class="label">Ground X (E)</div>
+                        <div class="value" id="val-x">512.00 m</div>
+                    </div>
+                    <div class="telemetry-card">
+                        <div class="label">Ground Y (N)</div>
+                        <div class="value" id="val-y">512.00 m</div>
+                    </div>
+                    <div class="telemetry-card highlight">
+                        <div class="label">Elevation Z</div>
+                        <div class="value" id="val-z">0.00 m</div>
+                    </div>
+                    <div class="telemetry-card">
+                        <div class="label">Parallax (px)</div>
+                        <div class="value" id="val-parallax">0.00 px</div>
+                    </div>
+                </div>
+
+                <h2>3D Floating Mark Controls</h2>
+                <div class="instructions">
+                    <p><strong>VR Headset (Quest 2):</strong></p>
+                    <ul style="padding-left: 18px; margin-top: 4px; display: flex; flex-direction: column; gap: 4px;">
+                        <li><span class="kbd-badge">Left Thumbstick</span> Roam X / Y across photos</li>
+                        <li><span class="kbd-badge">Right Stick Up/Down</span> Adjust Elevation Z (Depth)</li>
+                        <li><span class="kbd-badge">Right Trigger</span> Digitize 3D Vertex</li>
+                        <li><span class="kbd-badge">B / Y Button</span> Finish Feature / Undo</li>
+                    </ul>
+                    <hr style="border: 0; border-top: 1px solid var(--border-color); margin: 8px 0;">
+                    <p><strong>Desktop / Mouse Controls:</strong></p>
+                    <ul style="padding-left: 18px; margin-top: 4px; display: flex; flex-direction: column; gap: 4px;">
+                        <li><span class="kbd-badge">Mouse Drag / Arrows</span> Roam X / Y</li>
+                        <li><span class="kbd-badge">Mouse Wheel / W-S</span> Elevate Z (Disparity)</li>
+                        <li><span class="kbd-badge">Space / Click</span> Place Vertex</li>
+                        <li><span class="kbd-badge">Enter</span> Finish Line / Polygon</li>
+                    </ul>
+                </div>
+            </aside>
+
+            <!-- Right Panel: Active Vector Layers & Digitizing -->
+            <aside class="panel">
+                <h2>Vector Digitizing</h2>
+                <div class="digitizer-controls">
+                    <div class="tool-select">
+                        <button class="tool-btn" data-tool="PointZ">PointZ</button>
+                        <button class="tool-btn active" data-tool="LineStringZ">LineStringZ</button>
+                        <button class="tool-btn" data-tool="PolygonZ">PolygonZ</button>
+                    </div>
+
+                    <div class="feature-stats">
+                        <div class="stat-row">
+                            <span class="label">Active Tool:</span>
+                            <span id="stat-active-tool">LineStringZ</span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="label">Current Feature Vertices:</span>
+                            <span id="stat-vertex-count">0</span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="label">Completed Features:</span>
+                            <span id="stat-feature-count">0</span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="label">CRS / Units:</span>
+                            <span>Local Photogrammetric (Meters)</span>
+                        </div>
+                    </div>
+
+                    <div style="display: flex; gap: 6px; margin-top: 6px;">
+                        <button class="btn-action" id="btn-finish-feature" style="flex: 1;">Finish Feature</button>
+                        <button class="btn-toggle" id="btn-undo-point">Undo</button>
+                        <button class="btn-toggle" id="btn-clear-all" style="color: var(--danger-color);">Clear</button>
+                    </div>
+                </div>
+
+                <h2>Calibrated Targets in Test Pair</h2>
+                <div class="instructions" style="font-size: 11px;">
+                    <div>• <strong>Building A (Top Left):</strong> Roof Z = 45m (HVAC Z = 55m)</div>
+                    <div>• <strong>Tower (Bottom Right):</strong> Roof Z = 80m (Spire Z = 110m)</div>
+                    <div>• <strong>Terraced Hill (Top Left):</strong> Z = 10m, 20m, 35m</div>
+                    <div>• <strong>Excavation Pit:</strong> Depth Z = -25m, -40m</div>
+                    <div>• <strong>Yellow GCPs:</strong> Ground reference Z = 0m</div>
+                </div>
+            </aside>
+        </div>
+
+        <!-- The VR Button will be inserted here by Three.js -->
+        <div class="vr-banner" id="vr-btn-container"></div>
+    </div>
+
+    <!-- Application Script -->
+    <script type="module" src="js/app.js"></script>
+</body>
+</html>
