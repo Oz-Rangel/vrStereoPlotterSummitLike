@@ -5,10 +5,18 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { DATASETS, DATASET_CYCLE, PLANE_BASE_SIZE, hasCustomPair, setCustomPair } from './datasets.js';
 import * as StereoMath from './stereo-math.js';
 import { HUD_CANVAS_WIDTH, HUD_CANVAS_HEIGHT, renderHud, hitTestHudButtons } from './vr-hud.js';
+import {
+    createHistory
+} from './history.js';
+import {
+    createDigitizerState, nextTool as nextDigitizerTool,
+    setTool as setDigitizerTool, toGeoJSON
+} from './digitizer.js';
+import { createDigitizerBridge } from './digitizer-bridge.js';
 
 /* ==========================================================================
    Photogrammetric Stereoplotter Engine (Summit Evolution Architecture)
-   
+
    Core Mechanism:
    1. Central Fixed Stereoscopic Reticle:
       The measuring mark sits centered in the observer's line of sight at (0, 0).
@@ -26,6 +34,9 @@ import { HUD_CANVAS_WIDTH, HUD_CANVAS_HEIGHT, renderHud, hitTestHudButtons } fro
    All stereoplotter arithmetic lives in ./stereo-math.js (pure, unit-tested).
    All built-in dataset metadata lives in ./datasets.js.
    All VR HUD rendering + hit-testing lives in ./vr-hud.js (pure).
+   The vector digitizer state machine lives in ./digitizer.js (pure, unit-tested).
+   The undo/redo stack lives in ./history.js (pure, unit-tested).
+   The Three.js mesh adapter lives in ./digitizer-bridge.js.
    ========================================================================== */
 
 // --- Global Application State ---
@@ -54,10 +65,6 @@ const state = {
         flipY: false           // Mirror top-bottom on both eye planes
     },
 
-    // Vector Digitizer State
-    activeTool: 'LineStringZ', // 'PointZ', 'LineStringZ', 'PolygonZ'
-    activeFeature: [],         // Array of [x, y, z] points currently being drawn
-    completedFeatures: [],     // Array of finished feature objects
     displayMode: 'mono',       // 'mono', 'sbs'
     isVR: false
 };
@@ -72,11 +79,11 @@ const customPairState = {
     rightName: ''
 };
 
-// --- Action History Stack (Undo / Redo) ---
-const history = {
-    undoStack: [],
-    redoStack: []
-};
+// Pure digitizer state machine (see ./digitizer.js) — source of truth for vectors
+const digitizer = createDigitizerState('LineStringZ');
+
+// Pure undo/redo stack (see ./history.js)
+const history = createHistory();
 
 // --- Three.js Core Variables ---
 let container, scene, camera, renderer, controls;
@@ -90,10 +97,6 @@ let centralFloatingMark;
 
 // Vector Groups Parented directly to Image Planes
 let vectorGroupLeft, vectorGroupRight;
-let activeLineMeshLeft = null;
-let activeLineMeshRight = null;
-const activeVertexMeshesLeft = [];
-const activeVertexMeshesRight = [];
 
 // VR HUD Tablet & Interaction
 let vrHudMesh, vrHudCanvas, vrHudCtx;
@@ -118,6 +121,15 @@ const prevButtonState = {
     buttonY: false,
     leftStickClick: false
 };
+
+// --- Three.js bridge for the pure digitizer & history ---
+const bridge = createDigitizerBridge({
+    digitizer,
+    history,
+    getModel: () => state.model,
+    getVectorGroups: () => ({ left: vectorGroupLeft, right: vectorGroupRight }),
+    onStatsChange: () => updateStatsDisplay()
+});
 
 // --- Initialize Engine ---
 init();
@@ -358,7 +370,10 @@ function loadStereoTextures(leftUrl, rightUrl, options = {}) {
 }
 
 function buildStereoPlanes() {
-    // Preserve digitized vectors across texture reloads when possible by clearing groups only
+    // Bug A fix: old vector groups are about to be discarded. Drop any
+    // digitizer state pointing into them so we don't leak stale mesh refs.
+    bridge.resetOnRebuild();
+
     if (leftPlane) {
         workstationGroup.remove(leftPlane);
         if (leftPlane.geometry) leftPlane.geometry.dispose();
@@ -517,9 +532,9 @@ function buildHudViewModel(laserUV = null) {
         zoom: state.model.zoom,
         datasetLabel: dataset.label,
         datasetShortLabel: dataset.shortLabel,
-        activeTool: state.activeTool,
-        activeFeatureCount: state.activeFeature.length,
-        completedFeaturesCount: state.completedFeatures.length,
+        activeTool: digitizer.activeTool,
+        activeFeatureCount: digitizer.activeFeature.length,
+        completedFeaturesCount: digitizer.completedFeatures.length,
         hoveredButtonId: hoveredHudButton,
         laserUV
     };
@@ -797,245 +812,22 @@ function handleRightController(gp, deltaTime) {
     prevButtonState.buttonB = btnB;
 }
 
-// --- Summit Vector Digitizer Engine ---
-// Vertices are added to vectorGroupLeft (child of leftPlane) and vectorGroupRight (child of rightPlane).
-// When images roam or shift in parallax, the vectors glide with them in 100% lockstep!
-function digitizeCurrentVertex() {
-    const pt = [state.cursor.x, state.cursor.y, state.cursor.z];
-    state.activeFeature.push(pt);
-
-    // Plane-local coordinates on each eye plane (see stereo-math.js)
-    const local = StereoMath.computeVertexLocal({
-        px: pt[0],
-        py: pt[1],
-        z: pt[2],
-        baseParallax: state.model.baseParallax,
-        parallaxPerMeter: state.model.parallaxPerMeter,
-        widthUnits: state.model.widthUnits,
-        heightUnits: state.model.heightUnits,
-        planeWidth3D: state.model.planeWidth3D,
-        planeHeight3D: state.model.planeHeight3D
-    });
-
-    // Left Vertex Mesh (child of leftPlane)
-    const vGeo = new THREE.CircleGeometry(0.008, 16);
-    const vMatL = new THREE.MeshBasicMaterial({ color: 0x33ff99, depthTest: false, side: THREE.DoubleSide });
-    const vMeshL = new THREE.Mesh(vGeo, vMatL);
-    vMeshL.position.set(local.left.x, local.left.y, 0.002);
-    vMeshL.layers.set(1);
-    vectorGroupLeft.add(vMeshL);
-    activeVertexMeshesLeft.push(vMeshL);
-
-    // Right Vertex Mesh (child of rightPlane)
-    const vMatR = new THREE.MeshBasicMaterial({ color: 0x33ff99, depthTest: false, side: THREE.DoubleSide });
-    const vMeshR = new THREE.Mesh(vGeo, vMatR);
-    vMeshR.position.set(local.right.x, local.right.y, 0.002);
-    vMeshR.layers.set(2);
-    vectorGroupRight.add(vMeshR);
-    activeVertexMeshesRight.push(vMeshR);
-
-    // Record action for Undo
-    history.undoStack.push({
-        type: 'ADD_VERTEX',
-        point: pt,
-        meshL: vMeshL,
-        meshR: vMeshR
-    });
-    history.redoStack = [];
-
-    updateActiveLineMesh();
-
-    if (state.activeTool === 'PointZ') {
-        finishActiveFeature();
-    }
-
-    updateStatsDisplay();
-}
-
-function updateActiveLineMesh() {
-    if (activeLineMeshLeft) {
-        vectorGroupLeft.remove(activeLineMeshLeft);
-        activeLineMeshLeft.geometry.dispose();
-        activeLineMeshLeft = null;
-    }
-    if (activeLineMeshRight) {
-        vectorGroupRight.remove(activeLineMeshRight);
-        activeLineMeshRight.geometry.dispose();
-        activeLineMeshRight = null;
-    }
-
-    if (state.activeFeature.length < 2) return;
-
-    const pointsL = [];
-    const pointsR = [];
-
-    state.activeFeature.forEach(pt => {
-        const local = StereoMath.computeVertexLocal({
-            px: pt[0],
-            py: pt[1],
-            z: pt[2],
-            baseParallax: state.model.baseParallax,
-            parallaxPerMeter: state.model.parallaxPerMeter,
-            widthUnits: state.model.widthUnits,
-            heightUnits: state.model.heightUnits,
-            planeWidth3D: state.model.planeWidth3D,
-            planeHeight3D: state.model.planeHeight3D
-        });
-
-        pointsL.push(new THREE.Vector3(local.left.x, local.left.y, 0.002));
-        pointsR.push(new THREE.Vector3(local.right.x, local.right.y, 0.002));
-    });
-
-    // Left Eye Line (child of leftPlane)
-    const lineGeoL = new THREE.BufferGeometry().setFromPoints(pointsL);
-    const lineMatL = new THREE.LineBasicMaterial({ color: 0x00d4ff, linewidth: 2, depthTest: false });
-    activeLineMeshLeft = new THREE.Line(lineGeoL, lineMatL);
-    activeLineMeshLeft.layers.set(1);
-    vectorGroupLeft.add(activeLineMeshLeft);
-
-    // Right Eye Line (child of rightPlane)
-    const lineGeoR = new THREE.BufferGeometry().setFromPoints(pointsR);
-    const lineMatR = new THREE.LineBasicMaterial({ color: 0x00d4ff, linewidth: 2, depthTest: false });
-    activeLineMeshRight = new THREE.Line(lineGeoR, lineMatR);
-    activeLineMeshRight.layers.set(2);
-    vectorGroupRight.add(activeLineMeshRight);
-}
-
-function finishActiveFeature() {
-    if (state.activeFeature.length === 0) return;
-
-    const completed = {
-        type: state.activeTool,
-        coordinates: [...state.activeFeature],
-        lineMeshL: activeLineMeshLeft,
-        lineMeshR: activeLineMeshRight,
-        vertexMeshesL: [...activeVertexMeshesLeft],
-        vertexMeshesR: [...activeVertexMeshesRight]
-    };
-
-    state.completedFeatures.push(completed);
-
-    history.undoStack.push({
-        type: 'FINISH_FEATURE',
-        feature: completed
-    });
-    history.redoStack = [];
-
-    state.activeFeature = [];
-    activeVertexMeshesLeft.length = 0;
-    activeVertexMeshesRight.length = 0;
-    activeLineMeshLeft = null;
-    activeLineMeshRight = null;
-
-    updateStatsDisplay();
-}
-
-// --- Robust Undo & Redo ---
-function undoAction() {
-    if (history.undoStack.length === 0) return;
-
-    const action = history.undoStack.pop();
-
-    if (action.type === 'ADD_VERTEX') {
-        state.activeFeature.pop();
-        if (action.meshL) vectorGroupLeft.remove(action.meshL);
-        if (action.meshR) vectorGroupRight.remove(action.meshR);
-
-        const idxL = activeVertexMeshesLeft.indexOf(action.meshL);
-        if (idxL !== -1) activeVertexMeshesLeft.splice(idxL, 1);
-        const idxR = activeVertexMeshesRight.indexOf(action.meshR);
-        if (idxR !== -1) activeVertexMeshesRight.splice(idxR, 1);
-
-        updateActiveLineMesh();
-        history.redoStack.push(action);
-    } else if (action.type === 'FINISH_FEATURE') {
-        state.completedFeatures.pop();
-        state.activeFeature = [...action.feature.coordinates];
-        activeLineMeshLeft = action.feature.lineMeshL;
-        activeLineMeshRight = action.feature.lineMeshR;
-        activeVertexMeshesLeft.length = 0;
-        activeVertexMeshesRight.length = 0;
-        action.feature.vertexMeshesL.forEach(m => activeVertexMeshesLeft.push(m));
-        action.feature.vertexMeshesR.forEach(m => activeVertexMeshesRight.push(m));
-        history.redoStack.push(action);
-    } else if (action.type === 'CLEAR_ALL') {
-        state.completedFeatures = [...action.completedFeatures];
-        state.activeFeature = [...action.activeFeature];
-        action.meshesL.forEach(m => vectorGroupLeft.add(m));
-        action.meshesR.forEach(m => vectorGroupRight.add(m));
-        history.redoStack.push(action);
-    }
-
-    updateStatsDisplay();
-}
-
-function redoAction() {
-    if (history.redoStack.length === 0) return;
-
-    const action = history.redoStack.pop();
-
-    if (action.type === 'ADD_VERTEX') {
-        state.activeFeature.push(action.point);
-        if (action.meshL) vectorGroupLeft.add(action.meshL);
-        if (action.meshR) vectorGroupRight.add(action.meshR);
-        activeVertexMeshesLeft.push(action.meshL);
-        activeVertexMeshesRight.push(action.meshR);
-        updateActiveLineMesh();
-        history.undoStack.push(action);
-    } else if (action.type === 'FINISH_FEATURE') {
-        state.completedFeatures.push(action.feature);
-        state.activeFeature = [];
-        activeVertexMeshesLeft.length = 0;
-        activeVertexMeshesRight.length = 0;
-        activeLineMeshLeft = null;
-        activeLineMeshRight = null;
-        history.undoStack.push(action);
-    } else if (action.type === 'CLEAR_ALL') {
-        clearAllFeatures(false);
-    }
-
-    updateStatsDisplay();
-}
-
-function clearAllFeatures(recordHistory = true) {
-    if (state.completedFeatures.length === 0 && state.activeFeature.length === 0) return;
-
-    const meshesL = [...vectorGroupLeft.children];
-    const meshesR = [...vectorGroupRight.children];
-
-    if (recordHistory) {
-        history.undoStack.push({
-            type: 'CLEAR_ALL',
-            completedFeatures: [...state.completedFeatures],
-            activeFeature: [...state.activeFeature],
-            meshesL: meshesL,
-            meshesR: meshesR
-        });
-        history.redoStack = [];
-    }
-
-    state.activeFeature = [];
-    state.completedFeatures = [];
-    activeVertexMeshesLeft.length = 0;
-    activeVertexMeshesRight.length = 0;
-    activeLineMeshLeft = null;
-    activeLineMeshRight = null;
-
-    while (vectorGroupLeft.children.length > 0) vectorGroupLeft.remove(vectorGroupLeft.children[0]);
-    while (vectorGroupRight.children.length > 0) vectorGroupRight.remove(vectorGroupRight.children[0]);
-
-    updateStatsDisplay();
-}
+// --- Vector Digitizer & History actions ---
+// Business logic lives in ./digitizer.js (state machine), ./history.js
+// (undo/redo stack) and ./digitizer-bridge.js (Three.js mesh adapter).
+// These thin wrappers keep every existing call site unchanged.
+function digitizeCurrentVertex() { bridge.digitizeCurrentVertex(state.cursor); }
+function finishActiveFeature() { bridge.finishActiveFeature(); }
+function undoAction() { bridge.undoAction(); }
+function redoAction() { bridge.redoAction(); }
+function clearAllFeatures(recordHistory = true) { bridge.clearAllFeatures(recordHistory); }
 
 function cycleTool() {
-    const tools = ['PointZ', 'LineStringZ', 'PolygonZ'];
-    const nextIdx = (tools.indexOf(state.activeTool) + 1) % tools.length;
-    state.activeTool = tools[nextIdx];
-
+    digitizer.activeTool = nextDigitizerTool(digitizer.activeTool);
     document.querySelectorAll('.tool-btn').forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.tool === state.activeTool);
+        btn.classList.toggle('active', btn.dataset.tool === digitizer.activeTool);
     });
-    document.getElementById('stat-active-tool').textContent = state.activeTool;
+    document.getElementById('stat-active-tool').textContent = digitizer.activeTool;
     updateVRHudTexture();
 }
 
@@ -1174,9 +966,10 @@ function applyCustomStereoPair() {
 }
 
 function updateStatsDisplay() {
-    document.getElementById('stat-vertex-count').textContent = state.activeFeature.length;
-    document.getElementById('stat-feature-count').textContent = state.completedFeatures.length;
-    document.getElementById('stat-history-count').textContent = `${history.undoStack.length} / ${history.redoStack.length}`;
+    const s = bridge.stats();
+    document.getElementById('stat-vertex-count').textContent = s.vertexCount;
+    document.getElementById('stat-feature-count').textContent = s.featureCount;
+    document.getElementById('stat-history-count').textContent = `${s.undoDepth} / ${s.redoDepth}`;
     updateVRHudTexture();
 }
 
@@ -1252,8 +1045,8 @@ function setupDesktopUI() {
         btn.addEventListener('click', () => {
             document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
-            state.activeTool = btn.dataset.tool;
-            document.getElementById('stat-active-tool').textContent = state.activeTool;
+            setDigitizerTool(digitizer, btn.dataset.tool);
+            document.getElementById('stat-active-tool').textContent = digitizer.activeTool;
             updateVRHudTexture();
         });
     });
@@ -1339,45 +1132,18 @@ function setupDesktopUI() {
 
 // --- 3D GeoJSON Exporter ---
 function exportGeoJSON() {
-    if (state.completedFeatures.length === 0 && state.activeFeature.length === 0) {
+    if (digitizer.completedFeatures.length === 0 && digitizer.activeFeature.length === 0) {
         alert('No digitized features to export! Digitize some vertices first.');
         return;
     }
 
-    const geojson = {
-        type: "FeatureCollection",
-        name: "Summit_Evolution_Digitized_Vectors",
-        crs: {
-            type: "name",
-            properties: { name: "urn:ogc:def:crs:OGC:1.3:CRS84" }
-        },
-        features: []
+    const geojson = toGeoJSON(digitizer, { name: 'Summit_Evolution_Digitized_Vectors' });
+    geojson.crs = {
+        type: 'name',
+        properties: { name: 'urn:ogc:def:crs:OGC:1.3:CRS84' }
     };
 
-    state.completedFeatures.forEach((feat, idx) => {
-        let geomType = feat.type.replace('Z', '');
-        let coords = feat.coordinates;
-
-        if (geomType === 'Polygon' && coords.length >= 3) {
-            coords = [[...coords, coords[0]]];
-        }
-
-        geojson.features.push({
-            type: "Feature",
-            id: idx + 1,
-            properties: {
-                id: idx + 1,
-                layer_type: feat.type,
-                vertex_count: feat.coordinates.length
-            },
-            geometry: {
-                type: geomType,
-                coordinates: coords
-            }
-        });
-    });
-
-    const blob = new Blob([JSON.stringify(geojson, null, 2)], { type: "application/geo+json" });
+    const blob = new Blob([JSON.stringify(geojson, null, 2)], { type: 'application/geo+json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
