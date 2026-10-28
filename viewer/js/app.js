@@ -3,56 +3,186 @@ import { VRButton } from 'three/addons/webxr/VRButton.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 /* ==========================================================================
-   Photogrammetric Stereoplotter Engine (Phase 1)
-   Architecture: Three.js + WebXR Layers + 3D Floating Mark + Vector Digitizer
+   Photogrammetric Stereoplotter Engine (Summit Evolution Architecture)
+   
+   Core Mechanism:
+   1. Central Fixed Stereoscopic Reticle:
+      The measuring mark sits centered in the observer's line of sight at (0, 0).
+   2. Roaming Imagery (X, Y):
+      Left Stick pans the terrain imagery beneath the fixed central reticle.
+   3. Dynamic Image Parallax (Z-Index Wheel):
+      Right Stick Up/Down shifts the Right Image horizontally relative to the Left Image.
+      When conjugate rooftop points align under the central reticle, the roof
+      fuses in crisp 3D stereoscopic depth with ZERO eye strain.
+   4. Base Parallax Datum:
+      Calibrated datum offset (-60px for Vaihingen) eliminates forced eye vergence.
+   5. Dynamic Zoom Magnification:
+      Right Stick Left/Right zooms the stereo imagery from 0.5x to 3.5x.
    ========================================================================== */
+
+// --- Built-in Stereo Datasets ---
+const DATASETS = {
+    synth: {
+        id: 'synth',
+        label: 'Calibration',
+        shortLabel: 'Synth',
+        left: 'assets/synthetic/left.png',
+        right: 'assets/synthetic/right.png',
+        baseParallax: 0.0,
+        infoHtml: `
+            <div>• <strong>Dataset:</strong> Synthetic Calibrated Stereopair</div>
+            <div>• <strong>Base Parallax:</strong> 0.0 px</div>
+            <div>• <strong>Targets:</strong> Bldg A: 45m | Tower: 80m | Spire: 110m</div>
+            <div>• <strong>Contours:</strong> Terraced Hill: 10m, 20m, 35m</div>
+        `
+    },
+    real: {
+        id: 'real',
+        label: 'Vaihingen Aerial',
+        shortLabel: 'Aerial',
+        left: 'assets/real_aerial/left.png',
+        right: 'assets/real_aerial/right.png',
+        baseParallax: -60.0,
+        infoHtml: `
+            <div>• <strong>Dataset:</strong> ISPRS Vaihingen Aerial Stereo Pair</div>
+            <div>• <strong>Base Parallax:</strong> -60.0 px (Aligned for zero ground strain)</div>
+            <div>• <strong>Workflow:</strong> Roam with Left Stick, adjust Z with Right Stick until rooftop fuses at the center crosshair, then pull trigger to digitize!</div>
+        `
+    },
+    aurrera: {
+        id: 'aurrera',
+        label: 'Aurrera (SummitEV)',
+        shortLabel: 'Aurrera',
+        left: 'assets/aurrera/left.png',
+        right: 'assets/aurrera/right.png',
+        baseParallax: 0.0,
+        flipX: true,
+        parallaxPerMeter: -0.5,
+        infoHtml: `
+            <div>• <strong>Dataset:</strong> Summit Evolution Aurrera DemoDron (Model 3_33+3_34)</div>
+            <div>• <strong>Source:</strong> Epipolar-rectified TIFF pair from SummitEV/Imagenes</div>
+            <div>• <strong>Base Parallax:</strong> 0.0 px (ground datum aligned)</div>
+            <div>• <strong>Orientation:</strong> Flip H on (toggle if it still looks mirrored)</div>
+            <div>• <strong>Tip:</strong> Generate other models with <code>python viewer/process_aurrera_pair.py &lt;ModelName&gt;</code></div>
+        `
+    },
+    custom: {
+        id: 'custom',
+        label: 'Custom Pair',
+        shortLabel: 'Custom',
+        left: null,
+        right: null,
+        baseParallax: 0.0,
+        infoHtml: `
+            <div>• <strong>Dataset:</strong> Custom user stereo pair</div>
+            <div>• <strong>Base Parallax:</strong> adjustable via Base px controls</div>
+            <div>• <strong>Formats:</strong> PNG, JPEG, WebP (preprocess SummitEV TIFFs first)</div>
+        `
+    }
+};
+
+const PLANE_BASE_SIZE = 2.2; // meters — longest image side maps to this
 
 // --- Global Application State ---
 const state = {
-    // Spatial Photogrammetric Coordinates
+    // Current Dataset ('synth' | 'real' | 'aurrera' | 'custom')
+    currentDataset: 'synth',
+
+    // Roaming Ground Coordinates (pixels / meters)
     cursor: {
-        x: 512.0,      // Ground X (Easting in meters)
-        y: 512.0,      // Ground Y (Northing in meters)
+        x: 512.0,      // Ground Easting (0..widthUnits)
+        y: 512.0,      // Ground Northing (0..heightUnits)
         z: 0.0,        // Elevation Z in meters
-        parallax: 0.0  // Computed disparity in pixels
+        totalParallax: 0.0 // Computed total horizontal disparity in pixels
     },
-    // Model Scale & Parallax Factors
+
+    // Photogrammetric Model & Parallax Parameters
     model: {
-        widthMeters: 1024.0,   // Ground extent in meters
-        heightMeters: 1024.0,
-        planeWidth3D: 2.5,     // Virtual 3D plane dimension in WebXR meters
-        planeHeight3D: 2.5,
+        widthUnits: 1024.0,
+        heightUnits: 1024.0,
+        planeWidth3D: PLANE_BASE_SIZE,
+        planeHeight3D: PLANE_BASE_SIZE,
+        baseParallax: 0.0,     // 0.0 for synthetic calibration, -60.0 for Vaihingen
         parallaxPerMeter: 0.5, // 0.5px disparity per 1m height
-        zDepthFactor: 0.0055   // 3D forward/backward displacement per meter of Z
+        zoom: 1.0,             // Magnification factor (0.5x to 3.5x)
+        flipX: false,          // Mirror left-right on both eye planes
+        flipY: false           // Mirror top-bottom on both eye planes
     },
+
     // Vector Digitizer State
     activeTool: 'LineStringZ', // 'PointZ', 'LineStringZ', 'PolygonZ'
     activeFeature: [],         // Array of [x, y, z] points currently being drawn
     completedFeatures: [],     // Array of finished feature objects
-    displayMode: 'mono',       // 'mono', 'sbs', 'anaglyph'
+    displayMode: 'mono',       // 'mono', 'sbs'
     isVR: false
+};
+
+// Object URLs for custom uploads (revoked on replace)
+const customPairState = {
+    leftFile: null,
+    rightFile: null,
+    leftUrl: null,
+    rightUrl: null,
+    leftName: '',
+    rightName: ''
+};
+
+// --- Action History Stack (Undo / Redo) ---
+const history = {
+    undoStack: [],
+    redoStack: []
 };
 
 // --- Three.js Core Variables ---
 let container, scene, camera, renderer, controls;
-let stereoGroup, leftPlane, rightPlane;
+let workstationGroup; // Master container for station
+let stereoWindowFrame;
+let leftPlane, rightPlane;
 let leftTexture, rightTexture;
-let floatingMark, conjugateMarkLeft, conjugateMarkRight;
-let vrHudMesh, vrHudCanvas, vrHudCtx;
-let vectorGroup;
-let currentLineMesh = null;
 
-// VR Controller references
+// Central Fixed Stereoscopic Reticle
+let centralFloatingMark;
+
+// Vector Groups Parented directly to Image Planes
+let vectorGroupLeft, vectorGroupRight;
+let activeLineMeshLeft = null;
+let activeLineMeshRight = null;
+const activeVertexMeshesLeft = [];
+const activeVertexMeshesRight = [];
+
+// VR HUD Tablet & Interaction
+let vrHudMesh, vrHudCanvas, vrHudCtx;
+let hoveredHudButton = null;
+const hudButtons = [
+    { id: 'undo', text: '↶ Undo', x: 15, y: 240, w: 90, h: 52 },
+    { id: 'redo', text: '↷ Redo', x: 110, y: 240, w: 90, h: 52 },
+    { id: 'dataset', text: '🗺 Dataset', x: 205, y: 240, w: 105, h: 52 },
+    { id: 'clear', text: '🗑 Clear', x: 315, y: 240, w: 95, h: 52 },
+    { id: 'reset', text: '🎯 Center', x: 415, y: 240, w: 105, h: 52 },
+    { id: 'tool', text: 'Tool: LineZ', x: 525, y: 240, w: 100, h: 52 }
+];
+
+// WebXR Controllers & Grabbing State
 const controllers = [];
-const controllerGrips = [];
+const raycaster = new THREE.Raycaster();
+const grabState = {
+    isGrabbing: false,
+    initialWorkstationPos: new THREE.Vector3(),
+    initialCtrlPos: new THREE.Vector3()
+};
+
+// Button edge detection
 const prevButtonState = {
     rightTrigger: false,
     leftTrigger: false,
     buttonA: false,
-    buttonB: false
+    buttonB: false,
+    buttonX: false,
+    buttonY: false,
+    leftStickClick: false
 };
 
-// --- Initialization ---
+// --- Initialize Engine ---
 init();
 
 function init() {
@@ -64,7 +194,7 @@ function init() {
 
     // 2. Camera setup
     camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.05, 100);
-    camera.position.set(0, 0, 2.2);
+    camera.position.set(0, 0, 2.6);
 
     // 3. Renderer with WebXR enabled
     renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
@@ -73,7 +203,7 @@ function init() {
     renderer.xr.enabled = true;
     container.appendChild(renderer.domElement);
 
-    // 4. VR Button for Quest Browser
+    // 4. VR Button
     const vrBtnContainer = document.getElementById('vr-btn-container');
     const vrButton = VRButton.createButton(renderer);
     vrBtnContainer.appendChild(vrButton);
@@ -81,15 +211,13 @@ function init() {
     renderer.xr.addEventListener('sessionstart', () => {
         state.isVR = true;
         document.getElementById('desktop-ui').style.display = 'none';
-        if (vrHudMesh) vrHudMesh.visible = true;
-        // Position user comfortably in front of stereo model
-        camera.position.set(0, 0, 1.8);
+        setTimeout(resetWorkstationView, 300);
     });
 
     renderer.xr.addEventListener('sessionend', () => {
         state.isVR = false;
         document.getElementById('desktop-ui').style.display = 'flex';
-        if (vrHudMesh) vrHudMesh.visible = false;
+        resetWorkstationView();
     });
 
     // 5. OrbitControls for desktop preview
@@ -98,223 +226,454 @@ function init() {
     controls.dampingFactor = 0.05;
     controls.target.set(0, 0, 0);
 
-    // 6. Lights
+    // 6. Lighting
     const ambientLight = new THREE.AmbientLight(0xffffff, 1.2);
     scene.add(ambientLight);
 
-    // 7. Groups
-    stereoGroup = new THREE.Group();
-    scene.add(stereoGroup);
+    // 7. Workstation Master Container
+    workstationGroup = new THREE.Group();
+    scene.add(workstationGroup);
 
-    vectorGroup = new THREE.Group();
-    scene.add(vectorGroup);
+    // 8. Stereo Viewing Aperture Window Frame (Summit Evolution Bezel)
+    createStereoWindowFrame();
 
-    // 8. Load Initial Stereo Pair
-    loadStereoTextures('assets/left.png', 'assets/right.png');
+    // 9. Central Fixed Stereoscopic Reticle
+    createCentralFloatingMark();
 
-    // 9. Build 3D Floating Mark (Stereo Cursor)
-    createFloatingMark();
+    // 10. Load Initial Stereo Textures & Build Image Planes (Default: Calibrated Target)
+    loadStereoTextures(DATASETS.synth.left, DATASETS.synth.right, {
+        baseParallax: DATASETS.synth.baseParallax,
+        parallaxPerMeter: 0.5,
+        flipX: false,
+        flipY: false,
+        onLoaded: () => updateDatasetInfoBox(DATASETS.synth)
+    });
 
-    // 10. Build In-VR HUD
+    // 11. Build In-VR Interactive HUD Tablet
     createVRHud();
 
-    // 11. Setup WebXR Controllers
+    // 12. Setup WebXR Controllers
     setupControllers();
 
-    // 12. Setup Desktop UI & Keyboard listeners
+    // 13. Setup Desktop UI & Keyboard listeners
     setupDesktopUI();
     setupKeyboardAndMouse();
 
-    // 13. Window resize
+    // 14. Window resize
     window.addEventListener('resize', onWindowResize);
 
-    // 14. Start Main Render Loop
+    // 15. Start Main Render Loop
     renderer.setAnimationLoop(renderLoop);
 }
 
-// --- Texture and Stereo Plane Setup ---
-function loadStereoTextures(leftUrl, rightUrl) {
-    const loader = new THREE.TextureLoader();
-    
-    loader.load(leftUrl, (texL) => {
-        leftTexture = texL;
-        leftTexture.minFilter = THREE.LinearFilter;
-        leftTexture.magFilter = THREE.LinearFilter;
-
-        loader.load(rightUrl, (texR) => {
-            rightTexture = texR;
-            rightTexture.minFilter = THREE.LinearFilter;
-            rightTexture.magFilter = THREE.LinearFilter;
-            buildStereoPlanes();
+// --- Stereo Window Frame & Bezel ---
+function createStereoWindowFrame() {
+    if (stereoWindowFrame) {
+        workstationGroup.remove(stereoWindowFrame);
+        stereoWindowFrame.traverse((obj) => {
+            if (obj.geometry) obj.geometry.dispose();
+            if (obj.material) obj.material.dispose();
         });
-    });
+    }
+
+    stereoWindowFrame = new THREE.Group();
+    workstationGroup.add(stereoWindowFrame);
+
+    // Elegant Bezel surrounding the stereo aperture (adapts to image aspect)
+    const w = state.model.planeWidth3D;
+    const h = state.model.planeHeight3D;
+    const thickness = 0.08;
+    const depth = 0.02;
+
+    const bezelMat = new THREE.MeshBasicMaterial({ color: 0x141822 });
+
+    const topBar = new THREE.Mesh(new THREE.BoxGeometry(w + thickness * 2, thickness, depth), bezelMat);
+    topBar.position.set(0, h / 2 + thickness / 2, 0.005);
+    stereoWindowFrame.add(topBar);
+
+    const btmBar = new THREE.Mesh(new THREE.BoxGeometry(w + thickness * 2, thickness, depth), bezelMat);
+    btmBar.position.set(0, -h / 2 - thickness / 2, 0.005);
+    stereoWindowFrame.add(btmBar);
+
+    const leftBar = new THREE.Mesh(new THREE.BoxGeometry(thickness, h, depth), bezelMat);
+    leftBar.position.set(-w / 2 - thickness / 2, 0, 0.005);
+    stereoWindowFrame.add(leftBar);
+
+    const rightBar = new THREE.Mesh(new THREE.BoxGeometry(thickness, h, depth), bezelMat);
+    rightBar.position.set(w / 2 + thickness / 2, 0, 0.005);
+    stereoWindowFrame.add(rightBar);
+
+    if (vrHudMesh) {
+        vrHudMesh.position.set(0, -h / 2 - 0.24, 0.12);
+    }
 }
 
-function buildStereoPlanes() {
-    // Clear existing planes if reloading
-    if (leftPlane) stereoGroup.remove(leftPlane);
-    if (rightPlane) stereoGroup.remove(rightPlane);
+/** Fit the 3D stereo planes to the loaded image aspect ratio. */
+function applyImageDimensions(imgWidth, imgHeight) {
+    const w = Math.max(1, imgWidth || 1024);
+    const h = Math.max(1, imgHeight || 1024);
+    state.model.widthUnits = w;
+    state.model.heightUnits = h;
 
-    const geo = new THREE.PlaneGeometry(state.model.planeWidth3D, state.model.planeHeight3D);
+    if (w >= h) {
+        state.model.planeWidth3D = PLANE_BASE_SIZE;
+        state.model.planeHeight3D = PLANE_BASE_SIZE * (h / w);
+    } else {
+        state.model.planeHeight3D = PLANE_BASE_SIZE;
+        state.model.planeWidth3D = PLANE_BASE_SIZE * (w / h);
+    }
 
-    // Left Eye Material & Plane (Assigned to Layer 1)
-    const matL = new THREE.MeshBasicMaterial({ map: leftTexture, side: THREE.DoubleSide });
-    leftPlane = new THREE.Mesh(geo, matL);
-    leftPlane.layers.set(1); // Left eye only in WebXR
-    stereoGroup.add(leftPlane);
-
-    // Right Eye Material & Plane (Assigned to Layer 2)
-    const matR = new THREE.MeshBasicMaterial({ map: rightTexture, side: THREE.DoubleSide });
-    rightPlane = new THREE.Mesh(geo, matR);
-    rightPlane.layers.set(2); // Right eye only in WebXR
-    stereoGroup.add(rightPlane);
-
-    // Add a neat surrounding workstation bezel frame
-    const bezelGeo = new THREE.BoxGeometry(state.model.planeWidth3D + 0.08, state.model.planeHeight3D + 0.08, 0.02);
-    const bezelMat = new THREE.MeshBasicMaterial({ color: 0x1f2430, wireframe: false });
-    const bezel = new THREE.Mesh(bezelGeo, bezelMat);
-    bezel.position.z = -0.015;
-    bezel.layers.enable(0);
-    stereoGroup.add(bezel);
+    state.cursor.x = w / 2;
+    state.cursor.y = h / 2;
+    createStereoWindowFrame();
 }
 
-// --- 3D Floating Mark (Stereo Cursor) ---
-function createFloatingMark() {
-    floatingMark = new THREE.Group();
-    floatingMark.layers.enable(0); // Visible to both eyes
+// --- Central Fixed Stereoscopic Reticle ---
+// Sits fixed at (0, 0, 0.005) in workstation space.
+// Both eyes converge on this mark with ZERO eye fatigue.
+function createCentralFloatingMark() {
+    centralFloatingMark = new THREE.Group();
+    centralFloatingMark.layers.enable(0); // Visible to both eyes
 
-    // 1. Central precision crosshair dot
-    const dotGeo = new THREE.SphereGeometry(0.008, 16, 16);
-    const dotMat = new THREE.MeshBasicMaterial({ color: 0x00ffcc, depthTest: false });
+    // Central glowing precision dot
+    const dotGeo = new THREE.CircleGeometry(0.005, 16);
+    const dotMat = new THREE.MeshBasicMaterial({ color: 0x00ffff, depthTest: false, side: THREE.DoubleSide });
     const dot = new THREE.Mesh(dotGeo, dotMat);
-    floatingMark.add(dot);
+    centralFloatingMark.add(dot);
 
-    // 2. High-contrast circular aiming reticle
-    const ringGeo = new THREE.RingGeometry(0.025, 0.028, 32);
-    const ringMat = new THREE.MeshBasicMaterial({ color: 0x00d4ff, side: THREE.DoubleSide, depthTest: false });
+    // Precision aiming ring
+    const ringGeo = new THREE.RingGeometry(0.016, 0.019, 32);
+    const ringMat = new THREE.MeshBasicMaterial({ color: 0x00d4ff, depthTest: false, side: THREE.DoubleSide });
     const ring = new THREE.Mesh(ringGeo, ringMat);
-    floatingMark.add(ring);
+    centralFloatingMark.add(ring);
 
-    // 3. Crosshair hairs
+    // Crosshairs
     const lineMat = new THREE.LineBasicMaterial({ color: 0x00d4ff, depthTest: false });
     const linePoints = [
-        new THREE.Vector3(-0.05, 0, 0), new THREE.Vector3(-0.012, 0, 0),
-        new THREE.Vector3(0.012, 0, 0), new THREE.Vector3(0.05, 0, 0),
-        new THREE.Vector3(0, -0.05, 0), new THREE.Vector3(0, -0.012, 0),
-        new THREE.Vector3(0, 0.012, 0), new THREE.Vector3(0, 0.05, 0)
+        new THREE.Vector3(-0.035, 0, 0), new THREE.Vector3(-0.01, 0, 0),
+        new THREE.Vector3(0.01, 0, 0), new THREE.Vector3(0.035, 0, 0),
+        new THREE.Vector3(0, -0.035, 0), new THREE.Vector3(0, -0.01, 0),
+        new THREE.Vector3(0, 0.01, 0), new THREE.Vector3(0, 0.035, 0)
     ];
     const lineGeo = new THREE.BufferGeometry().setFromPoints(linePoints);
     const lines = new THREE.LineSegments(lineGeo, lineMat);
-    floatingMark.add(lines);
+    centralFloatingMark.add(lines);
 
-    // Ensure floating mark always renders crisply on top
-    floatingMark.renderOrder = 999;
-    scene.add(floatingMark);
-
-    updateCursorPosition();
+    centralFloatingMark.position.set(0, 0, 0.006);
+    centralFloatingMark.renderOrder = 999;
+    workstationGroup.add(centralFloatingMark);
 }
 
-// --- Update Cursor Spatial Position & Ground Telemetry ---
-function updateCursorPosition() {
-    // Map Ground Coordinates (0..1024) to 3D Virtual Coordinates (-1.25..+1.25)
-    const normX = (state.cursor.x / state.model.widthMeters) - 0.5;
-    const normY = 0.5 - (state.cursor.y / state.model.heightMeters); // Invert Y for screen coords
+// --- Texture and Stereo Plane Setup ---
+function disposeTexture(tex) {
+    if (tex) tex.dispose();
+}
 
-    const posX = normX * state.model.planeWidth3D;
-    const posY = normY * state.model.planeHeight3D;
+function loadStereoTextures(leftUrl, rightUrl, options = {}) {
+    const loader = new THREE.TextureLoader();
+    loader.load(
+        leftUrl,
+        (texL) => {
+            disposeTexture(leftTexture);
+            leftTexture = texL;
+            leftTexture.colorSpace = THREE.SRGBColorSpace;
+            leftTexture.minFilter = THREE.LinearFilter;
+            leftTexture.magFilter = THREE.LinearFilter;
 
-    // Disparity calculation:
-    // In photogrammetry: p = Z * parallax_factor
-    state.cursor.parallax = state.cursor.z * state.model.parallaxPerMeter;
+            loader.load(
+                rightUrl,
+                (texR) => {
+                    disposeTexture(rightTexture);
+                    rightTexture = texR;
+                    rightTexture.colorSpace = THREE.SRGBColorSpace;
+                    rightTexture.minFilter = THREE.LinearFilter;
+                    rightTexture.magFilter = THREE.LinearFilter;
 
-    // Floating mark depth in VR:
-    // As elevation Z increases, the mark advances toward the user (into positive Z),
-    // matching the stereoscopic convergence depth of the elevated feature!
-    const posZ = state.cursor.z * state.model.zDepthFactor;
+                    const imgW = texL.image?.naturalWidth || texL.image?.width || 1024;
+                    const imgH = texL.image?.naturalHeight || texL.image?.height || 1024;
+                    applyImageDimensions(imgW, imgH);
 
-    if (floatingMark) {
-        floatingMark.position.set(posX, posY, posZ);
+                    if (typeof options.baseParallax === 'number') {
+                        state.model.baseParallax = options.baseParallax;
+                    }
+                    if (typeof options.parallaxPerMeter === 'number') {
+                        state.model.parallaxPerMeter = options.parallaxPerMeter;
+                    }
+                    if (typeof options.flipX === 'boolean') {
+                        state.model.flipX = options.flipX;
+                    }
+                    if (typeof options.flipY === 'boolean') {
+                        state.model.flipY = options.flipY;
+                    }
+
+                    buildStereoPlanes();
+                    updateSummitPositions();
+                    syncFlipButtons();
+                    if (typeof options.onLoaded === 'function') options.onLoaded();
+                },
+                undefined,
+                (err) => {
+                    console.error('Failed to load right stereo image:', err);
+                    alert('Could not load the right stereo image. Check the file format (PNG/JPEG/WebP).');
+                }
+            );
+        },
+        undefined,
+        (err) => {
+            console.error('Failed to load left stereo image:', err);
+            alert('Could not load the left stereo image. Check the file format (PNG/JPEG/WebP).');
+        }
+    );
+}
+
+function buildStereoPlanes() {
+    // Preserve digitized vectors across texture reloads when possible by clearing groups only
+    if (leftPlane) {
+        workstationGroup.remove(leftPlane);
+        if (leftPlane.geometry) leftPlane.geometry.dispose();
+        if (leftPlane.material) leftPlane.material.dispose();
+    }
+    if (rightPlane) {
+        workstationGroup.remove(rightPlane);
+        if (rightPlane.geometry) rightPlane.geometry.dispose();
+        if (rightPlane.material) rightPlane.material.dispose();
     }
 
-    // Update Desktop Telemetry UI
+    const geo = new THREE.PlaneGeometry(state.model.planeWidth3D, state.model.planeHeight3D);
+
+    // Left Eye Plane (Layer 1)
+    const matL = new THREE.MeshBasicMaterial({ map: leftTexture, side: THREE.DoubleSide });
+    leftPlane = new THREE.Mesh(geo, matL);
+    leftPlane.layers.set(1);
+    workstationGroup.add(leftPlane);
+
+    // Parent Left Vector Group directly to Left Plane
+    vectorGroupLeft = new THREE.Group();
+    vectorGroupLeft.layers.set(1);
+    leftPlane.add(vectorGroupLeft);
+
+    // Right Eye Plane (Layer 2)
+    const matR = new THREE.MeshBasicMaterial({ map: rightTexture, side: THREE.DoubleSide });
+    rightPlane = new THREE.Mesh(geo, matR);
+    rightPlane.layers.set(2);
+    workstationGroup.add(rightPlane);
+
+    // Parent Right Vector Group directly to Right Plane
+    vectorGroupRight = new THREE.Group();
+    vectorGroupRight.layers.set(2);
+    rightPlane.add(vectorGroupRight);
+
+    applyTextureFlips();
+    updateSummitPositions();
+}
+
+/** Mirror textures on both eye planes without reloading images. */
+function applyTextureFlips() {
+    [leftTexture, rightTexture].forEach((tex) => {
+        if (!tex) return;
+        tex.wrapS = THREE.RepeatWrapping;
+        tex.wrapT = THREE.RepeatWrapping;
+        tex.repeat.x = state.model.flipX ? -1 : 1;
+        tex.repeat.y = state.model.flipY ? -1 : 1;
+        tex.offset.x = state.model.flipX ? 1 : 0;
+        tex.offset.y = state.model.flipY ? 1 : 0;
+        tex.needsUpdate = true;
+    });
+}
+
+function syncFlipButtons() {
+    const btnX = document.getElementById('btn-flip-x');
+    const btnY = document.getElementById('btn-flip-y');
+    if (btnX) btnX.classList.toggle('active', !!state.model.flipX);
+    if (btnY) btnY.classList.toggle('active', !!state.model.flipY);
+}
+
+function toggleFlip(axis) {
+    if (axis === 'x') {
+        state.model.flipX = !state.model.flipX;
+        // Mirroring X reverses elevation disparity sign
+        state.model.parallaxPerMeter *= -1;
+    } else if (axis === 'y') {
+        state.model.flipY = !state.model.flipY;
+    }
+    applyTextureFlips();
+    syncFlipButtons();
+    updateSummitPositions();
+}
+
+// --- Summit Evolution Engine: Roaming Imagery & Dynamic Image Parallax ---
+// Panning moves BOTH images under the central reticle.
+// Elevation Z shifts the Right Image in X relative to the Left Image.
+function updateSummitPositions() {
+    if (!leftPlane || !rightPlane) return;
+
+    // Apply Magnification Scale to Image Planes
+    leftPlane.scale.set(state.model.zoom, state.model.zoom, 1);
+    rightPlane.scale.set(state.model.zoom, state.model.zoom, 1);
+
+    const currentW = state.model.planeWidth3D * state.model.zoom;
+    const currentH = state.model.planeHeight3D * state.model.zoom;
+
+    // Compute Total Parallax: Base Parallax + Elevation Parallax
+    state.cursor.totalParallax = state.model.baseParallax + (state.cursor.z * state.model.parallaxPerMeter);
+
+    // Normalized coordinates of Roaming Center (0..1024 -> -0.5..+0.5)
+    const normX = (state.cursor.x / state.model.widthUnits) - 0.5;
+    const normY = 0.5 - (state.cursor.y / state.model.heightUnits);
+
+    // Horizontal shift in 3D meters corresponding to disparity:
+    // disp3D = (totalParallax / widthUnits) * currentW
+    const disp3D = (state.cursor.totalParallax / state.model.widthUnits) * currentW;
+
+    // 1. POSITION LEFT IMAGE PLANE (Layer 1):
+    // Brings Ground Point (cursor.x, cursor.y) directly under Central Reticle (0, 0)
+    leftPlane.position.set(-normX * currentW, -normY * currentH, 0);
+
+    // 2. POSITION RIGHT IMAGE PLANE (Layer 2):
+    // Shifts horizontally by disparity so that conjugate point aligns under Central Reticle (0, 0)
+    // When the rooftop features align under the central mark, they fuse into solid 3D depth!
+    rightPlane.position.set(-normX * currentW + disp3D, -normY * currentH, 0);
+
+    // Update Telemetry Display
     document.getElementById('val-x').textContent = state.cursor.x.toFixed(2) + ' m';
     document.getElementById('val-y').textContent = state.cursor.y.toFixed(2) + ' m';
     document.getElementById('val-z').textContent = state.cursor.z.toFixed(2) + ' m';
-    document.getElementById('val-parallax').textContent = state.cursor.parallax.toFixed(1) + ' px';
+    document.getElementById('val-parallax').textContent = state.cursor.totalParallax.toFixed(1) + ' px';
+    document.getElementById('stat-base-parallax').textContent = state.model.baseParallax.toFixed(1) + ' px';
+    document.getElementById('stat-zoom-level').textContent = state.model.zoom.toFixed(1) + 'x';
 
-    // Update In-VR HUD Canvas
     updateVRHudTexture();
 }
 
-// --- In-VR Heads-Up Display (HUD) ---
+// --- In-VR Interactive HUD Tablet ---
 function createVRHud() {
     vrHudCanvas = document.createElement('canvas');
-    vrHudCanvas.width = 512;
-    vrHudCanvas.height = 256;
+    vrHudCanvas.width = 640;
+    vrHudCanvas.height = 320;
     vrHudCtx = vrHudCanvas.getContext('2d');
 
     const texture = new THREE.CanvasTexture(vrHudCanvas);
-    const mat = new THREE.MeshBasicMaterial({ map: texture, transparent: true, opacity: 0.92 });
-    const geo = new THREE.PlaneGeometry(0.45, 0.225);
+    const mat = new THREE.MeshBasicMaterial({ map: texture, transparent: true, opacity: 0.95, side: THREE.DoubleSide });
+    const geo = new THREE.PlaneGeometry(0.72, 0.36);
 
     vrHudMesh = new THREE.Mesh(geo, mat);
     vrHudMesh.layers.enable(0);
-    vrHudMesh.position.set(0, -0.65, 1.1); // Positioned slightly below central line of sight
-    vrHudMesh.rotation.x = -Math.PI / 8;
-    vrHudMesh.visible = false;
-    scene.add(vrHudMesh);
+    // Position comfortably directly underneath the stereo viewing aperture
+    vrHudMesh.position.set(0, -state.model.planeHeight3D / 2 - 0.24, 0.12);
+    vrHudMesh.rotation.x = -Math.PI / 10;
+    workstationGroup.add(vrHudMesh);
 
     updateVRHudTexture();
 }
 
-function updateVRHudTexture() {
+function updateVRHudTexture(laserUV = null) {
     if (!vrHudCtx) return;
 
-    // Draw high-tech HUD background
-    vrHudCtx.clearRect(0, 0, 512, 256);
-    vrHudCtx.fillStyle = 'rgba(15, 20, 30, 0.9)';
+    vrHudCtx.clearRect(0, 0, 640, 320);
+    vrHudCtx.fillStyle = 'rgba(12, 17, 26, 0.94)';
     vrHudCtx.strokeStyle = '#00d4ff';
     vrHudCtx.lineWidth = 4;
     vrHudCtx.beginPath();
-    vrHudCtx.roundRect(10, 10, 492, 236, 16);
+    vrHudCtx.roundRect(10, 10, 620, 300, 18);
     vrHudCtx.fill();
     vrHudCtx.stroke();
 
     // Header
     vrHudCtx.fillStyle = '#00d4ff';
-    vrHudCtx.font = 'bold 22px sans-serif';
-    vrHudCtx.fillText('STEREOPLOTTER HUD - VR WORKSTATION', 25, 45);
+    vrHudCtx.font = 'bold 19px sans-serif';
+    vrHudCtx.fillText('SUMMIT EVOLUTION STEREOPLOTTER HUD', 25, 45);
 
-    // Coordinates Grid
+    // Telemetry Grid
     vrHudCtx.fillStyle = '#8b949e';
-    vrHudCtx.font = '16px monospace';
+    vrHudCtx.font = '15px monospace';
     vrHudCtx.fillText('GROUND X (E):', 25, 80);
     vrHudCtx.fillText('GROUND Y (N):', 25, 110);
     vrHudCtx.fillText('ELEVATION Z :', 25, 140);
-    vrHudCtx.fillText('DISPARITY px:', 25, 170);
+    vrHudCtx.fillText('PARALLAX px :', 25, 170);
 
     vrHudCtx.fillStyle = '#ffffff';
-    vrHudCtx.font = 'bold 18px monospace';
+    vrHudCtx.font = 'bold 17px monospace';
     vrHudCtx.fillText(`${state.cursor.x.toFixed(2)} m`, 180, 80);
     vrHudCtx.fillText(`${state.cursor.y.toFixed(2)} m`, 180, 110);
-
     vrHudCtx.fillStyle = '#33ff99';
     vrHudCtx.fillText(`${state.cursor.z.toFixed(2)} m`, 180, 140);
-
     vrHudCtx.fillStyle = '#00d4ff';
-    vrHudCtx.fillText(`${state.cursor.parallax.toFixed(1)} px`, 180, 170);
+    vrHudCtx.fillText(`${state.cursor.totalParallax.toFixed(1)} px (Base: ${state.model.baseParallax.toFixed(0)})`, 180, 170);
 
-    // Status / Tool Info
+    // Status Row
     vrHudCtx.fillStyle = '#d29922';
     vrHudCtx.font = '15px sans-serif';
-    vrHudCtx.fillText(`Tool: ${state.activeTool} | Vertices: ${state.activeFeature.length}`, 25, 205);
-    vrHudCtx.fillStyle = '#8b949e';
-    vrHudCtx.font = '13px sans-serif';
-    vrHudCtx.fillText('[R-Trigger] Digitize | [R-Stick Up/Down] Elevate Z', 25, 230);
+    const datasetLabel = (DATASETS[state.currentDataset] || DATASETS.synth).label;
+    vrHudCtx.fillText(`[${datasetLabel} ${state.model.zoom.toFixed(1)}x] Tool: ${state.activeTool} | Pts: ${state.activeFeature.length} | Done: ${state.completedFeatures.length}`, 25, 205);
+
+    // Interactive Buttons Row
+    hudButtons.forEach(btn => {
+        if (btn.id === 'tool') {
+            btn.text = `Tool: ${state.activeTool.replace('Z', '')}`;
+        } else if (btn.id === 'dataset') {
+            btn.text = (DATASETS[state.currentDataset] || DATASETS.synth).shortLabel;
+        }
+
+        const isHovered = (hoveredHudButton === btn.id);
+
+        vrHudCtx.fillStyle = isHovered ? '#00d4ff' : 'rgba(30, 42, 60, 0.85)';
+        vrHudCtx.strokeStyle = isHovered ? '#ffffff' : 'rgba(0, 212, 255, 0.4)';
+        vrHudCtx.lineWidth = 2;
+        vrHudCtx.beginPath();
+        vrHudCtx.roundRect(btn.x, btn.y, btn.w, btn.h, 8);
+        vrHudCtx.fill();
+        vrHudCtx.stroke();
+
+        vrHudCtx.fillStyle = isHovered ? '#050b14' : (btn.id === 'clear' ? '#f85149' : '#ffffff');
+        vrHudCtx.font = isHovered ? 'bold 14px sans-serif' : '13px sans-serif';
+        vrHudCtx.textAlign = 'center';
+        vrHudCtx.fillText(btn.text, btn.x + btn.w / 2, btn.y + btn.h / 2 + 5);
+        vrHudCtx.textAlign = 'start';
+    });
+
+    // Draw Laser Aiming Dot on HUD
+    if (laserUV) {
+        vrHudCtx.fillStyle = '#ff0055';
+        vrHudCtx.strokeStyle = '#ffffff';
+        vrHudCtx.lineWidth = 2;
+        vrHudCtx.beginPath();
+        vrHudCtx.arc(laserUV.x, laserUV.y, 6, 0, Math.PI * 2);
+        vrHudCtx.fill();
+        vrHudCtx.stroke();
+    }
 
     if (vrHudMesh && vrHudMesh.material.map) {
         vrHudMesh.material.map.needsUpdate = true;
     }
+}
+
+// --- Repositioning / Center Workstation ---
+function resetWorkstationView() {
+    if (renderer.xr.isPresenting) {
+        const xrCamera = renderer.xr.getCamera();
+        const headPos = new THREE.Vector3();
+        const headDir = new THREE.Vector3();
+        xrCamera.getWorldPosition(headPos);
+        xrCamera.getWorldDirection(headDir);
+
+        headDir.y = 0;
+        headDir.normalize();
+
+        // Place station 2.3 meters in front of head at eye level
+        workstationGroup.position.copy(headPos).addScaledVector(headDir, 2.3);
+        workstationGroup.position.y = headPos.y - 0.05;
+        workstationGroup.scale.set(1, 1, 1);
+
+        workstationGroup.lookAt(headPos.x, workstationGroup.position.y, headPos.z);
+        workstationGroup.rotation.z = 0; // ZERO roll: Epipolar lines stay 100% horizontal
+    } else {
+        workstationGroup.position.set(0, 0, 0);
+        workstationGroup.rotation.set(0, 0, 0);
+        workstationGroup.scale.set(1, 1, 1);
+        camera.position.set(0, 0, 2.6);
+        controls.target.set(0, 0, 0);
+    }
+    updateVRHudTexture();
 }
 
 // --- WebXR Controllers Setup ---
@@ -324,163 +683,452 @@ function setupControllers() {
         scene.add(controller);
         controllers.push(controller);
 
-        // Controller visual ray
         const rayGeo = new THREE.BufferGeometry().setFromPoints([
             new THREE.Vector3(0, 0, 0),
-            new THREE.Vector3(0, 0, -1)
+            new THREE.Vector3(0, 0, -2.5)
         ]);
         const rayMat = new THREE.LineBasicMaterial({ color: 0x00d4ff, transparent: true, opacity: 0.5 });
         const ray = new THREE.Line(rayGeo, rayMat);
         ray.name = 'ray';
-        ray.scale.z = 0.5;
         controller.add(ray);
     }
 }
 
-// --- Poll WebXR Gamepads (Analog Thumbsticks & Buttons) ---
+// --- Process VR Input: Summit Evolution Mechanics ---
 function pollVRGamepads(deltaTime) {
     const session = renderer.xr.getSession();
     if (!session) return;
 
+    let leftSource = null;
+    let rightSource = null;
+
     for (const source of session.inputSources) {
         if (!source.gamepad) continue;
-
-        const gp = source.gamepad;
-        const handedness = source.handedness;
-        const axes = gp.axes; // [x, y, thumbstickX, thumbstickY]
-        const buttons = gp.buttons;
-
-        // Thumbstick axes vary by browser; standard WebXR mapping:
-        // axes[2] = Thumbstick X (-1 left, +1 right)
-        // axes[3] = Thumbstick Y (-1 up, +1 down)
-        const stickX = axes[2] || 0;
-        const stickY = axes[3] || 0;
-
-        // Deadzone filter
-        const deadzone = 0.15;
-        const cleanX = Math.abs(stickX) > deadzone ? stickX : 0;
-        const cleanY = Math.abs(stickY) > deadzone ? stickY : 0;
-
-        // LEFT CONTROLLER: Roam across stereopair (X, Y Ground Coordinates)
-        if (handedness === 'left') {
-            const roamSpeed = 260.0 * deltaTime; // meters per second
-            state.cursor.x += cleanX * roamSpeed;
-            state.cursor.y += cleanY * roamSpeed; // Up moves forward (North)
-
-            // Clamp to photo limits
-            state.cursor.x = Math.max(0, Math.min(state.model.widthMeters, state.cursor.x));
-            state.cursor.y = Math.max(0, Math.min(state.model.heightMeters, state.cursor.y));
-        }
-
-        // RIGHT CONTROLLER: Elevation Z Control & Digitizing
-        if (handedness === 'right') {
-            // Thumbstick Y elevates or lowers Z
-            const zSpeed = 45.0 * deltaTime; // meters of elevation per second
-            if (cleanY !== 0) {
-                state.cursor.z -= cleanY * zSpeed; // Push forward elevates Z
-                state.cursor.z = Math.max(-100, Math.min(250, state.cursor.z));
-            }
-
-            // Trigger Button (Digitize Vertex)
-            const triggerPressed = buttons[0] && buttons[0].pressed;
-            if (triggerPressed && !prevButtonState.rightTrigger) {
-                digitizeCurrentVertex();
-                // Haptic tactile feedback on Quest controller
-                if (gp.hapticActuators && gp.hapticActuators.length > 0) {
-                    gp.hapticActuators[0].pulse(0.8, 60);
-                }
-            }
-            prevButtonState.rightTrigger = triggerPressed;
-
-            // Button A (Cycle Active Tool)
-            const buttonAPressed = buttons[4] && buttons[4].pressed;
-            if (buttonAPressed && !prevButtonState.buttonA) {
-                cycleTool();
-            }
-            prevButtonState.buttonA = buttonAPressed;
-
-            // Button B (Finish Active Feature)
-            const buttonBPressed = buttons[5] && buttons[5].pressed;
-            if (buttonBPressed && !prevButtonState.buttonB) {
-                finishActiveFeature();
-            }
-            prevButtonState.buttonB = buttonBPressed;
-        }
+        if (source.handedness === 'left') leftSource = source;
+        if (source.handedness === 'right') rightSource = source;
     }
 
-    updateCursorPosition();
+    const leftGrip = leftSource && leftSource.gamepad.buttons[1] && leftSource.gamepad.buttons[1].pressed;
+    const rightGrip = rightSource && rightSource.gamepad.buttons[1] && rightSource.gamepad.buttons[1].pressed;
+
+    // 1. WORKSTATION REPOSITIONING (Left Grip)
+    handleWorkstationDrag(leftSource, leftGrip);
+
+    // 2. HUD INTERACTION via Controller Ray Pointer
+    handleHudRaycasting(rightSource || leftSource);
+
+    // 3. SUMMIT CONTROLS: Left Stick Roams Terrain, Right Stick Shifts Parallax
+    if (leftSource && leftSource.gamepad) {
+        handleLeftController(leftSource.gamepad, deltaTime);
+    }
+    if (rightSource && rightSource.gamepad) {
+        handleRightController(rightSource.gamepad, deltaTime);
+    }
+
+    updateSummitPositions();
 }
 
-// --- Vector Digitizing Logic ---
+// --- Workstation 3D Dragging ---
+function handleWorkstationDrag(source, gripPressed) {
+    const ctrl = controllers[0];
+    if (!ctrl || !source) return;
+
+    if (gripPressed) {
+        if (!grabState.isGrabbing) {
+            grabState.isGrabbing = true;
+            grabState.initialCtrlPos.copy(ctrl.position);
+            grabState.initialWorkstationPos.copy(workstationGroup.position);
+        } else {
+            const deltaPos = new THREE.Vector3().subVectors(ctrl.position, grabState.initialCtrlPos);
+            workstationGroup.position.addVectors(grabState.initialWorkstationPos, deltaPos);
+
+            // Re-orient squarely facing user while maintaining zero roll
+            const xrCamera = renderer.xr.getCamera();
+            const headPos = new THREE.Vector3();
+            xrCamera.getWorldPosition(headPos);
+            workstationGroup.lookAt(headPos.x, workstationGroup.position.y, headPos.z);
+            workstationGroup.rotation.z = 0;
+        }
+    } else {
+        grabState.isGrabbing = false;
+    }
+}
+
+// --- In-VR HUD Raycasting ---
+function handleHudRaycasting(activeSource) {
+    if (!vrHudMesh || !activeSource) return;
+
+    const ctrl = controllers[1] || controllers[0];
+    if (!ctrl) return;
+
+    const tempMatrix = new THREE.Matrix4();
+    tempMatrix.identity().extractRotation(ctrl.matrixWorld);
+    const rayOrigin = new THREE.Vector3().setFromMatrixPosition(ctrl.matrixWorld);
+    const rayDir = new THREE.Vector3(0, 0, -1).applyMatrix4(tempMatrix).normalize();
+
+    raycaster.set(rayOrigin, rayDir);
+    const intersects = raycaster.intersectObject(vrHudMesh);
+
+    if (intersects.length > 0) {
+        const uv = intersects[0].uv;
+        const px = uv.x * vrHudCanvas.width;
+        const py = (1 - uv.y) * vrHudCanvas.height;
+
+        let foundHover = null;
+        for (const btn of hudButtons) {
+            if (px >= btn.x && px <= btn.x + btn.w && py >= btn.y && py <= btn.y + btn.h) {
+                foundHover = btn.id;
+                break;
+            }
+        }
+
+        if (hoveredHudButton !== foundHover) {
+            hoveredHudButton = foundHover;
+            updateVRHudTexture({ x: px, y: py });
+        }
+
+        // Trigger click on HUD Button
+        const triggerPressed = activeSource.gamepad.buttons[0] && activeSource.gamepad.buttons[0].pressed;
+        if (triggerPressed && !prevButtonState.rightTrigger && hoveredHudButton) {
+            executeHudAction(hoveredHudButton, activeSource.gamepad);
+        }
+    } else {
+        if (hoveredHudButton !== null) {
+            hoveredHudButton = null;
+            updateVRHudTexture();
+        }
+    }
+}
+
+function executeHudAction(actionId, gamepad) {
+    if (gamepad && gamepad.hapticActuators && gamepad.hapticActuators.length > 0) {
+        gamepad.hapticActuators[0].pulse(0.8, 80);
+    }
+
+    switch (actionId) {
+        case 'undo':
+            undoAction();
+            break;
+        case 'redo':
+            redoAction();
+            break;
+        case 'clear':
+            clearAllFeatures();
+            break;
+        case 'reset':
+            resetWorkstationView();
+            break;
+        case 'tool':
+            cycleTool();
+            break;
+        case 'dataset':
+            toggleDataset();
+            break;
+    }
+}
+
+// --- Controller Actions ---
+function handleLeftController(gp, deltaTime) {
+    const axes = gp.axes;
+    const buttons = gp.buttons;
+
+    // LEFT STICK: ROAM TERRAIN BENEATH CENTRAL RETICLE
+    const stickX = Math.abs(axes[2] || 0) > 0.15 ? (axes[2] || 0) : 0;
+    const stickY = Math.abs(axes[3] || 0) > 0.15 ? (axes[3] || 0) : 0;
+    const roamSpeed = (240.0 / state.model.zoom) * deltaTime; // Adaptive speed by zoom
+
+    state.cursor.x = Math.max(0, Math.min(state.model.widthUnits, state.cursor.x + stickX * roamSpeed));
+    state.cursor.y = Math.max(0, Math.min(state.model.heightUnits, state.cursor.y + stickY * roamSpeed));
+
+    // Button X: Undo
+    const btnX = buttons[4] && buttons[4].pressed;
+    if (btnX && !prevButtonState.buttonX) {
+        undoAction();
+        if (gp.hapticActuators && gp.hapticActuators.length > 0) gp.hapticActuators[0].pulse(0.5, 40);
+    }
+    prevButtonState.buttonX = btnX;
+
+    // Button Y: Redo
+    const btnY = buttons[5] && buttons[5].pressed;
+    if (btnY && !prevButtonState.buttonY) {
+        redoAction();
+        if (gp.hapticActuators && gp.hapticActuators.length > 0) gp.hapticActuators[0].pulse(0.5, 40);
+    }
+    prevButtonState.buttonY = btnY;
+
+    // Left Stick Click (Button 3): Center Station
+    const stickClick = buttons[3] && buttons[3].pressed;
+    if (stickClick && !prevButtonState.leftStickClick) {
+        resetWorkstationView();
+    }
+    prevButtonState.leftStickClick = stickClick;
+}
+
+function handleRightController(gp, deltaTime) {
+    const axes = gp.axes;
+    const buttons = gp.buttons;
+
+    // RIGHT STICK UP/DOWN: SHIFT IMAGE PARALLAX (ELEVATION Z)
+    const stickY = Math.abs(axes[3] || 0) > 0.15 ? (axes[3] || 0) : 0;
+    const zSpeed = 40.0 * deltaTime;
+    if (stickY !== 0) {
+        state.cursor.z = Math.max(-150, Math.min(300, state.cursor.z - stickY * zSpeed));
+    }
+
+    // RIGHT STICK LEFT/RIGHT: ZOOM IN / OUT
+    const stickX = Math.abs(axes[2] || 0) > 0.25 ? (axes[2] || 0) : 0;
+    if (stickX !== 0) {
+        state.model.zoom = Math.max(0.5, Math.min(3.5, state.model.zoom + stickX * deltaTime * 1.5));
+    }
+
+    // Right Trigger: Digitize Vertex at Central Reticle
+    const trigger = buttons[0] && buttons[0].pressed;
+    if (trigger && !prevButtonState.rightTrigger && !hoveredHudButton) {
+        digitizeCurrentVertex();
+        if (gp.hapticActuators && gp.hapticActuators.length > 0) gp.hapticActuators[0].pulse(0.9, 70);
+    }
+    prevButtonState.rightTrigger = trigger;
+
+    // Button A: Cycle Tool
+    const btnA = buttons[4] && buttons[4].pressed;
+    if (btnA && !prevButtonState.buttonA) {
+        cycleTool();
+    }
+    prevButtonState.buttonA = btnA;
+
+    // Button B: Finish Feature
+    const btnB = buttons[5] && buttons[5].pressed;
+    if (btnB && !prevButtonState.buttonB) {
+        finishActiveFeature();
+    }
+    prevButtonState.buttonB = btnB;
+}
+
+// --- Summit Vector Digitizer Engine ---
+// Vertices are added to vectorGroupLeft (child of leftPlane) and vectorGroupRight (child of rightPlane).
+// When images roam or shift in parallax, the vectors glide with them in 100% lockstep!
 function digitizeCurrentVertex() {
     const pt = [state.cursor.x, state.cursor.y, state.cursor.z];
     state.activeFeature.push(pt);
 
-    // Render 3D Vertex Sphere in Scene
-    const normX = (pt[0] / state.model.widthMeters) - 0.5;
-    const normY = 0.5 - (pt[1] / state.model.heightMeters);
-    const posX = normX * state.model.planeWidth3D;
-    const posY = normY * state.model.planeHeight3D;
-    const posZ = pt[2] * state.model.zDepthFactor;
+    // Compute Local Coordinates on Image Plane Geometry (-w/2..+w/2)
+    const normX = (pt[0] / state.model.widthUnits) - 0.5;
+    const normY = 0.5 - (pt[1] / state.model.heightUnits);
+    const localX_L = normX * state.model.planeWidth3D;
+    const localY_L = normY * state.model.planeHeight3D;
 
-    const vGeo = new THREE.SphereGeometry(0.012, 16, 16);
-    const vMat = new THREE.MeshBasicMaterial({ color: 0x33ff99, depthTest: false });
-    const vMesh = new THREE.Mesh(vGeo, vMat);
-    vMesh.position.set(posX, posY, posZ);
-    vMesh.layers.enable(0);
-    vectorGroup.add(vMesh);
+    // On Right Image, conjugate feature is at (X - disparity):
+    const disp = state.model.baseParallax + (pt[2] * state.model.parallaxPerMeter);
+    const dispLocal = (disp / state.model.widthUnits) * state.model.planeWidth3D;
+    const localX_R = localX_L - dispLocal;
+    const localY_R = localY_L;
 
-    // Update dynamic line connecting vertices
+    // Left Vertex Mesh (child of leftPlane)
+    const vGeo = new THREE.CircleGeometry(0.008, 16);
+    const vMatL = new THREE.MeshBasicMaterial({ color: 0x33ff99, depthTest: false, side: THREE.DoubleSide });
+    const vMeshL = new THREE.Mesh(vGeo, vMatL);
+    vMeshL.position.set(localX_L, localY_L, 0.002);
+    vMeshL.layers.set(1);
+    vectorGroupLeft.add(vMeshL);
+    activeVertexMeshesLeft.push(vMeshL);
+
+    // Right Vertex Mesh (child of rightPlane)
+    const vMatR = new THREE.MeshBasicMaterial({ color: 0x33ff99, depthTest: false, side: THREE.DoubleSide });
+    const vMeshR = new THREE.Mesh(vGeo, vMatR);
+    vMeshR.position.set(localX_R, localY_R, 0.002);
+    vMeshR.layers.set(2);
+    vectorGroupRight.add(vMeshR);
+    activeVertexMeshesRight.push(vMeshR);
+
+    // Record action for Undo
+    history.undoStack.push({
+        type: 'ADD_VERTEX',
+        point: pt,
+        meshL: vMeshL,
+        meshR: vMeshR
+    });
+    history.redoStack = [];
+
     updateActiveLineMesh();
 
-    // If tool is PointZ, complete immediately
     if (state.activeTool === 'PointZ') {
         finishActiveFeature();
     }
 
-    // Update UI Stats
-    document.getElementById('stat-vertex-count').textContent = state.activeFeature.length;
+    updateStatsDisplay();
 }
 
 function updateActiveLineMesh() {
-    if (state.activeFeature.length < 2) return;
-
-    if (currentLineMesh) {
-        vectorGroup.remove(currentLineMesh);
-        currentLineMesh.geometry.dispose();
+    if (activeLineMeshLeft) {
+        vectorGroupLeft.remove(activeLineMeshLeft);
+        activeLineMeshLeft.geometry.dispose();
+        activeLineMeshLeft = null;
+    }
+    if (activeLineMeshRight) {
+        vectorGroupRight.remove(activeLineMeshRight);
+        activeLineMeshRight.geometry.dispose();
+        activeLineMeshRight = null;
     }
 
-    const points3D = state.activeFeature.map(pt => {
-        const normX = (pt[0] / state.model.widthMeters) - 0.5;
-        const normY = 0.5 - (pt[1] / state.model.heightMeters);
-        return new THREE.Vector3(
-            normX * state.model.planeWidth3D,
-            normY * state.model.planeHeight3D,
-            pt[2] * state.model.zDepthFactor
-        );
+    if (state.activeFeature.length < 2) return;
+
+    const pointsL = [];
+    const pointsR = [];
+
+    state.activeFeature.forEach(pt => {
+        const normX = (pt[0] / state.model.widthUnits) - 0.5;
+        const normY = 0.5 - (pt[1] / state.model.heightUnits);
+        const localX_L = normX * state.model.planeWidth3D;
+        const localY_L = normY * state.model.planeHeight3D;
+
+        const disp = state.model.baseParallax + (pt[2] * state.model.parallaxPerMeter);
+        const dispLocal = (disp / state.model.widthUnits) * state.model.planeWidth3D;
+        const localX_R = localX_L - dispLocal;
+        const localY_R = localY_L;
+
+        pointsL.push(new THREE.Vector3(localX_L, localY_L, 0.002));
+        pointsR.push(new THREE.Vector3(localX_R, localY_R, 0.002));
     });
 
-    const lineGeo = new THREE.BufferGeometry().setFromPoints(points3D);
-    const lineMat = new THREE.LineBasicMaterial({ color: 0x00d4ff, linewidth: 2, depthTest: false });
-    currentLineMesh = new THREE.Line(lineGeo, lineMat);
-    currentLineMesh.layers.enable(0);
-    vectorGroup.add(currentLineMesh);
+    // Left Eye Line (child of leftPlane)
+    const lineGeoL = new THREE.BufferGeometry().setFromPoints(pointsL);
+    const lineMatL = new THREE.LineBasicMaterial({ color: 0x00d4ff, linewidth: 2, depthTest: false });
+    activeLineMeshLeft = new THREE.Line(lineGeoL, lineMatL);
+    activeLineMeshLeft.layers.set(1);
+    vectorGroupLeft.add(activeLineMeshLeft);
+
+    // Right Eye Line (child of rightPlane)
+    const lineGeoR = new THREE.BufferGeometry().setFromPoints(pointsR);
+    const lineMatR = new THREE.LineBasicMaterial({ color: 0x00d4ff, linewidth: 2, depthTest: false });
+    activeLineMeshRight = new THREE.Line(lineGeoR, lineMatR);
+    activeLineMeshRight.layers.set(2);
+    vectorGroupRight.add(activeLineMeshRight);
 }
 
 function finishActiveFeature() {
     if (state.activeFeature.length === 0) return;
 
-    state.completedFeatures.push({
+    const completed = {
         type: state.activeTool,
-        coordinates: [...state.activeFeature]
+        coordinates: [...state.activeFeature],
+        lineMeshL: activeLineMeshLeft,
+        lineMeshR: activeLineMeshRight,
+        vertexMeshesL: [...activeVertexMeshesLeft],
+        vertexMeshesR: [...activeVertexMeshesRight]
+    };
+
+    state.completedFeatures.push(completed);
+
+    history.undoStack.push({
+        type: 'FINISH_FEATURE',
+        feature: completed
     });
+    history.redoStack = [];
 
     state.activeFeature = [];
-    currentLineMesh = null;
+    activeVertexMeshesLeft.length = 0;
+    activeVertexMeshesRight.length = 0;
+    activeLineMeshLeft = null;
+    activeLineMeshRight = null;
 
-    document.getElementById('stat-vertex-count').textContent = '0';
-    document.getElementById('stat-feature-count').textContent = state.completedFeatures.length;
-    updateVRHudTexture();
+    updateStatsDisplay();
+}
+
+// --- Robust Undo & Redo ---
+function undoAction() {
+    if (history.undoStack.length === 0) return;
+
+    const action = history.undoStack.pop();
+
+    if (action.type === 'ADD_VERTEX') {
+        state.activeFeature.pop();
+        if (action.meshL) vectorGroupLeft.remove(action.meshL);
+        if (action.meshR) vectorGroupRight.remove(action.meshR);
+
+        const idxL = activeVertexMeshesLeft.indexOf(action.meshL);
+        if (idxL !== -1) activeVertexMeshesLeft.splice(idxL, 1);
+        const idxR = activeVertexMeshesRight.indexOf(action.meshR);
+        if (idxR !== -1) activeVertexMeshesRight.splice(idxR, 1);
+
+        updateActiveLineMesh();
+        history.redoStack.push(action);
+    } else if (action.type === 'FINISH_FEATURE') {
+        state.completedFeatures.pop();
+        state.activeFeature = [...action.feature.coordinates];
+        activeLineMeshLeft = action.feature.lineMeshL;
+        activeLineMeshRight = action.feature.lineMeshR;
+        activeVertexMeshesLeft.length = 0;
+        activeVertexMeshesRight.length = 0;
+        action.feature.vertexMeshesL.forEach(m => activeVertexMeshesLeft.push(m));
+        action.feature.vertexMeshesR.forEach(m => activeVertexMeshesRight.push(m));
+        history.redoStack.push(action);
+    } else if (action.type === 'CLEAR_ALL') {
+        state.completedFeatures = [...action.completedFeatures];
+        state.activeFeature = [...action.activeFeature];
+        action.meshesL.forEach(m => vectorGroupLeft.add(m));
+        action.meshesR.forEach(m => vectorGroupRight.add(m));
+        history.redoStack.push(action);
+    }
+
+    updateStatsDisplay();
+}
+
+function redoAction() {
+    if (history.redoStack.length === 0) return;
+
+    const action = history.redoStack.pop();
+
+    if (action.type === 'ADD_VERTEX') {
+        state.activeFeature.push(action.point);
+        if (action.meshL) vectorGroupLeft.add(action.meshL);
+        if (action.meshR) vectorGroupRight.add(action.meshR);
+        activeVertexMeshesLeft.push(action.meshL);
+        activeVertexMeshesRight.push(action.meshR);
+        updateActiveLineMesh();
+        history.undoStack.push(action);
+    } else if (action.type === 'FINISH_FEATURE') {
+        state.completedFeatures.push(action.feature);
+        state.activeFeature = [];
+        activeVertexMeshesLeft.length = 0;
+        activeVertexMeshesRight.length = 0;
+        activeLineMeshLeft = null;
+        activeLineMeshRight = null;
+        history.undoStack.push(action);
+    } else if (action.type === 'CLEAR_ALL') {
+        clearAllFeatures(false);
+    }
+
+    updateStatsDisplay();
+}
+
+function clearAllFeatures(recordHistory = true) {
+    if (state.completedFeatures.length === 0 && state.activeFeature.length === 0) return;
+
+    const meshesL = [...vectorGroupLeft.children];
+    const meshesR = [...vectorGroupRight.children];
+
+    if (recordHistory) {
+        history.undoStack.push({
+            type: 'CLEAR_ALL',
+            completedFeatures: [...state.completedFeatures],
+            activeFeature: [...state.activeFeature],
+            meshesL: meshesL,
+            meshesR: meshesR
+        });
+        history.redoStack = [];
+    }
+
+    state.activeFeature = [];
+    state.completedFeatures = [];
+    activeVertexMeshesLeft.length = 0;
+    activeVertexMeshesRight.length = 0;
+    activeLineMeshLeft = null;
+    activeLineMeshRight = null;
+
+    while (vectorGroupLeft.children.length > 0) vectorGroupLeft.remove(vectorGroupLeft.children[0]);
+    while (vectorGroupRight.children.length > 0) vectorGroupRight.remove(vectorGroupRight.children[0]);
+
+    updateStatsDisplay();
 }
 
 function cycleTool() {
@@ -495,10 +1143,148 @@ function cycleTool() {
     updateVRHudTexture();
 }
 
-// --- Desktop Controls (Keyboard & Mouse) ---
+const DATASET_CYCLE = ['synth', 'real', 'aurrera', 'custom'];
+
+function syncDatasetButtons(activeId) {
+    document.querySelectorAll('#dataset-group .btn-toggle').forEach((btn) => {
+        btn.classList.toggle('active', btn.dataset.dataset === activeId);
+    });
+}
+
+function updateDatasetInfoBox(dataset, extraHtml = '') {
+    const box = document.getElementById('dataset-info-box');
+    if (!box) return;
+    const dims = `${Math.round(state.model.widthUnits)} × ${Math.round(state.model.heightUnits)} px`;
+    box.innerHTML = `
+        ${dataset.infoHtml}
+        <div>• <strong>Image Size:</strong> ${dims}</div>
+        ${extraHtml}
+    `;
+}
+
+function revokeCustomUrls() {
+    if (customPairState.leftUrl) URL.revokeObjectURL(customPairState.leftUrl);
+    if (customPairState.rightUrl) URL.revokeObjectURL(customPairState.rightUrl);
+    customPairState.leftUrl = null;
+    customPairState.rightUrl = null;
+}
+
+/** Switch built-in dataset, or open the custom loader when target is 'custom'. */
+function toggleDataset(target = null) {
+    let newTarget = target;
+    if (!newTarget) {
+        // Cycle datasets in VR HUD; skip custom unless a pair was already loaded
+        let idx = DATASET_CYCLE.indexOf(state.currentDataset);
+        for (let i = 0; i < DATASET_CYCLE.length; i++) {
+            idx = (idx + 1) % DATASET_CYCLE.length;
+            const candidate = DATASET_CYCLE[idx];
+            if (candidate === 'custom' && !(DATASETS.custom.left && DATASETS.custom.right)) {
+                continue;
+            }
+            newTarget = candidate;
+            break;
+        }
+    }
+
+    if (newTarget === 'custom' && !(DATASETS.custom.left && DATASETS.custom.right)) {
+        openCustomPairModal();
+        return;
+    }
+
+    const dataset = DATASETS[newTarget];
+    if (!dataset || !dataset.left || !dataset.right) return;
+    if (newTarget === state.currentDataset && leftTexture && rightTexture) return;
+
+    state.currentDataset = newTarget;
+    state.cursor.z = 0.0;
+    state.model.zoom = 1.0;
+    syncDatasetButtons(newTarget);
+
+    loadStereoTextures(dataset.left, dataset.right, {
+        baseParallax: dataset.baseParallax,
+        parallaxPerMeter: typeof dataset.parallaxPerMeter === 'number' ? dataset.parallaxPerMeter : 0.5,
+        flipX: !!dataset.flipX,
+        flipY: !!dataset.flipY,
+        onLoaded: () => {
+            if (newTarget === 'custom') {
+                updateDatasetInfoBox(dataset, `
+                    <div>• <strong>Left:</strong> ${customPairState.leftName || 'custom left'}</div>
+                    <div>• <strong>Right:</strong> ${customPairState.rightName || 'custom right'}</div>
+                `);
+            } else {
+                updateDatasetInfoBox(dataset);
+            }
+        }
+    });
+}
+
+function openCustomPairModal() {
+    const modal = document.getElementById('custom-pair-modal');
+    if (!modal) return;
+    document.getElementById('custom-base-parallax').value = String(state.model.baseParallax || 0);
+    refreshCustomModalStatus();
+    modal.hidden = false;
+}
+
+function closeCustomPairModal() {
+    const modal = document.getElementById('custom-pair-modal');
+    if (modal) modal.hidden = true;
+}
+
+function refreshCustomModalStatus() {
+    const leftName = document.getElementById('custom-left-name');
+    const rightName = document.getElementById('custom-right-name');
+    const applyBtn = document.getElementById('btn-apply-custom');
+    if (leftName) leftName.textContent = customPairState.leftName || 'No file selected';
+    if (rightName) rightName.textContent = customPairState.rightName || 'No file selected';
+    if (applyBtn) applyBtn.disabled = !(customPairState.leftFile && customPairState.rightFile);
+}
+
+function applyCustomStereoPair() {
+    if (!customPairState.leftFile || !customPairState.rightFile) return;
+
+    revokeCustomUrls();
+    customPairState.leftUrl = URL.createObjectURL(customPairState.leftFile);
+    customPairState.rightUrl = URL.createObjectURL(customPairState.rightFile);
+
+    const baseParallax = parseFloat(document.getElementById('custom-base-parallax').value);
+    const basePx = Number.isFinite(baseParallax) ? baseParallax : 0.0;
+
+    state.currentDataset = 'custom';
+    state.cursor.z = 0.0;
+    state.model.zoom = 1.0;
+    DATASETS.custom.baseParallax = basePx;
+    DATASETS.custom.left = customPairState.leftUrl;
+    DATASETS.custom.right = customPairState.rightUrl;
+    syncDatasetButtons('custom');
+    closeCustomPairModal();
+
+    loadStereoTextures(customPairState.leftUrl, customPairState.rightUrl, {
+        baseParallax: basePx,
+        parallaxPerMeter: 0.5,
+        flipX: false,
+        flipY: false,
+        onLoaded: () => {
+            updateDatasetInfoBox(DATASETS.custom, `
+                <div>• <strong>Left:</strong> ${customPairState.leftName}</div>
+                <div>• <strong>Right:</strong> ${customPairState.rightName}</div>
+                <div>• <strong>Base Parallax:</strong> ${basePx.toFixed(1)} px</div>
+            `);
+        }
+    });
+}
+
+function updateStatsDisplay() {
+    document.getElementById('stat-vertex-count').textContent = state.activeFeature.length;
+    document.getElementById('stat-feature-count').textContent = state.completedFeatures.length;
+    document.getElementById('stat-history-count').textContent = `${history.undoStack.length} / ${history.redoStack.length}`;
+    updateVRHudTexture();
+}
+
+// --- Desktop Controls ---
 function setupKeyboardAndMouse() {
     window.addEventListener('keydown', (e) => {
-        const step = e.shiftKey ? 10.0 : 2.5;
+        const step = e.shiftKey ? 12.0 : 3.0;
 
         switch (e.key.toLowerCase()) {
             case 'arrowleft':
@@ -507,11 +1293,11 @@ function setupKeyboardAndMouse() {
                 break;
             case 'arrowright':
             case 'd':
-                state.cursor.x = Math.min(state.model.widthMeters, state.cursor.x + step);
+                state.cursor.x = Math.min(state.model.widthUnits, state.cursor.x + step);
                 break;
             case 'arrowup':
             case 'w':
-                state.cursor.y = Math.min(state.model.heightMeters, state.cursor.y + step);
+                state.cursor.y = Math.min(state.model.heightUnits, state.cursor.y + step);
                 break;
             case 'arrowdown':
             case 's':
@@ -519,11 +1305,19 @@ function setupKeyboardAndMouse() {
                 break;
             case 'q':
             case 'pageup':
-                state.cursor.z = Math.min(250, state.cursor.z + 1.0);
+                state.cursor.z = Math.min(300, state.cursor.z + 1.0);
                 break;
             case 'e':
             case 'pagedown':
-                state.cursor.z = Math.max(-100, state.cursor.z - 1.0);
+                state.cursor.z = Math.max(-150, state.cursor.z - 1.0);
+                break;
+            case '+':
+            case '=':
+                state.model.zoom = Math.min(3.5, state.model.zoom + 0.1);
+                break;
+            case '-':
+            case '_':
+                state.model.zoom = Math.max(0.5, state.model.zoom - 0.1);
                 break;
             case ' ':
                 digitizeCurrentVertex();
@@ -531,35 +1325,28 @@ function setupKeyboardAndMouse() {
             case 'enter':
                 finishActiveFeature();
                 break;
-            case 'u':
-                undoLastPoint();
+            case 'z':
+                if (e.shiftKey) redoAction();
+                else undoAction();
+                break;
+            case 'y':
+                redoAction();
+                break;
+            case 'r':
+                resetWorkstationView();
                 break;
         }
-        updateCursorPosition();
+        updateSummitPositions();
     });
 
-    // Mouse wheel elevates Z when hovering canvas
     window.addEventListener('wheel', (e) => {
         if (state.isVR) return;
-        state.cursor.z += (e.deltaY < 0 ? 1.0 : -1.0);
-        state.cursor.z = Math.max(-100, Math.min(250, state.cursor.z));
-        updateCursorPosition();
+        state.cursor.z = Math.max(-150, Math.min(300, state.cursor.z + (e.deltaY < 0 ? 1.0 : -1.0)));
+        updateSummitPositions();
     }, { passive: true });
 }
 
-function undoLastPoint() {
-    if (state.activeFeature.length > 0) {
-        state.activeFeature.pop();
-        // Remove last vertex mesh from group
-        const lastChild = vectorGroup.children[vectorGroup.children.length - 1];
-        if (lastChild) vectorGroup.remove(lastChild);
-        updateActiveLineMesh();
-        document.getElementById('stat-vertex-count').textContent = state.activeFeature.length;
-        updateVRHudTexture();
-    }
-}
-
-// --- Desktop UI Button Handlers ---
+// --- Desktop UI Handlers ---
 function setupDesktopUI() {
     // Tool buttons
     document.querySelectorAll('.tool-btn').forEach(btn => {
@@ -572,21 +1359,43 @@ function setupDesktopUI() {
         });
     });
 
-    // Action buttons
-    document.getElementById('btn-finish-feature').addEventListener('click', finishActiveFeature);
-    document.getElementById('btn-undo-point').addEventListener('click', undoLastPoint);
-    document.getElementById('btn-clear-all').addEventListener('click', () => {
-        state.activeFeature = [];
-        state.completedFeatures = [];
-        while (vectorGroup.children.length > 0) {
-            vectorGroup.remove(vectorGroup.children[0]);
-        }
-        document.getElementById('stat-vertex-count').textContent = '0';
-        document.getElementById('stat-feature-count').textContent = '0';
-        updateVRHudTexture();
+    // Dataset selector (synth / real / aurrera / custom)
+    document.querySelectorAll('#dataset-group .btn-toggle').forEach((btn) => {
+        btn.addEventListener('click', () => {
+            const id = btn.dataset.dataset;
+            if (id === 'custom') {
+                // Re-open picker even if custom is already active
+                openCustomPairModal();
+                return;
+            }
+            toggleDataset(id);
+        });
     });
 
-    // Display mode buttons (Mono, SBS, Anaglyph)
+    // Base Parallax Nudge Buttons
+    document.getElementById('btn-base-p-minus').addEventListener('click', () => {
+        state.model.baseParallax -= 5.0;
+        updateSummitPositions();
+    });
+    document.getElementById('btn-base-p-plus').addEventListener('click', () => {
+        state.model.baseParallax += 5.0;
+        updateSummitPositions();
+    });
+    document.getElementById('btn-base-p-zero').addEventListener('click', () => {
+        state.model.baseParallax = 0.0;
+        updateSummitPositions();
+    });
+
+    document.getElementById('btn-flip-x').addEventListener('click', () => toggleFlip('x'));
+    document.getElementById('btn-flip-y').addEventListener('click', () => toggleFlip('y'));
+
+    document.getElementById('btn-finish-feature').addEventListener('click', finishActiveFeature);
+    document.getElementById('btn-undo-point').addEventListener('click', undoAction);
+    document.getElementById('btn-redo-point').addEventListener('click', redoAction);
+    document.getElementById('btn-clear-all').addEventListener('click', () => clearAllFeatures(true));
+    document.getElementById('btn-reset-view').addEventListener('click', resetWorkstationView);
+
+    // Display modes
     document.querySelectorAll('#display-mode-group .btn-toggle').forEach(btn => {
         btn.addEventListener('click', () => {
             document.querySelectorAll('#display-mode-group .btn-toggle').forEach(b => b.classList.remove('active'));
@@ -595,43 +1404,50 @@ function setupDesktopUI() {
         });
     });
 
-    // Custom Pair file loader
-    const btnCustom = document.getElementById('btn-custom-pair');
+    // Custom stereo pair modal
     const inputL = document.getElementById('file-left-input');
     const inputR = document.getElementById('file-right-input');
+    const modal = document.getElementById('custom-pair-modal');
 
-    btnCustom.addEventListener('click', () => {
-        alert('Please choose the LEFT eye photo first, then the RIGHT eye photo.');
-        inputL.click();
+    document.getElementById('btn-pick-left').addEventListener('click', () => inputL.click());
+    document.getElementById('btn-pick-right').addEventListener('click', () => inputR.click());
+    document.getElementById('btn-apply-custom').addEventListener('click', applyCustomStereoPair);
+    document.getElementById('btn-cancel-custom').addEventListener('click', closeCustomPairModal);
+    document.getElementById('btn-close-custom-modal').addEventListener('click', closeCustomPairModal);
+
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) closeCustomPairModal();
     });
 
     inputL.addEventListener('change', (e) => {
-        if (e.target.files && e.target.files[0]) {
-            const urlL = URL.createObjectURL(e.target.files[0]);
-            inputR.onchange = (e2) => {
-                if (e2.target.files && e2.target.files[0]) {
-                    const urlR = URL.createObjectURL(e2.target.files[0]);
-                    loadStereoTextures(urlL, urlR);
-                }
-            };
-            inputR.click();
-        }
+        const file = e.target.files && e.target.files[0];
+        if (!file) return;
+        customPairState.leftFile = file;
+        customPairState.leftName = file.name;
+        refreshCustomModalStatus();
     });
 
-    // Export GeoJSON
+    inputR.addEventListener('change', (e) => {
+        const file = e.target.files && e.target.files[0];
+        if (!file) return;
+        customPairState.rightFile = file;
+        customPairState.rightName = file.name;
+        refreshCustomModalStatus();
+    });
+
     document.getElementById('btn-export-geojson').addEventListener('click', exportGeoJSON);
 }
 
 // --- 3D GeoJSON Exporter ---
 function exportGeoJSON() {
     if (state.completedFeatures.length === 0 && state.activeFeature.length === 0) {
-        alert('No digitized features to export! Place some points first.');
+        alert('No digitized features to export! Digitize some vertices first.');
         return;
     }
 
     const geojson = {
         type: "FeatureCollection",
-        name: "VR_Photogrammetry_Digitized_Vectors",
+        name: "Summit_Evolution_Digitized_Vectors",
         crs: {
             type: "name",
             properties: { name: "urn:ogc:def:crs:OGC:1.3:CRS84" }
@@ -639,15 +1455,12 @@ function exportGeoJSON() {
         features: []
     };
 
-    // Include completed features
     state.completedFeatures.forEach((feat, idx) => {
         let geomType = feat.type.replace('Z', '');
         let coords = feat.coordinates;
 
         if (geomType === 'Polygon' && coords.length >= 3) {
-            // Close polygon ring
-            const closedCoords = [...coords, coords[0]];
-            coords = [closedCoords];
+            coords = [[...coords, coords[0]]];
         }
 
         geojson.features.push({
@@ -669,7 +1482,7 @@ function exportGeoJSON() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `vr_photogrammetry_${Date.now()}.geojson`;
+    a.download = `summit_evolution_${Date.now()}.geojson`;
     a.click();
     URL.revokeObjectURL(url);
 }
@@ -687,7 +1500,7 @@ function renderLoop(time, frame) {
     const deltaTime = Math.min((time - prevTime) / 1000, 0.1);
     prevTime = time;
 
-    // 1. Process WebXR Gamepads if inside Quest 2
+    // 1. Process WebXR Gamepads inside Quest 2
     if (renderer.xr.isPresenting) {
         pollVRGamepads(deltaTime);
         renderer.render(scene, camera);
@@ -698,19 +1511,18 @@ function renderLoop(time, frame) {
     controls.update();
 
     if (state.displayMode === 'sbs') {
-        // Side-by-Side Split Viewport
         const w = window.innerWidth;
         const h = window.innerHeight;
         renderer.setScissorTest(true);
 
-        // Left Eye Viewport (Layer 1 + Layer 0)
+        // Left Eye (Layer 1 + Layer 0)
         camera.layers.set(1);
         camera.layers.enable(0);
         renderer.setViewport(0, 0, w / 2, h);
         renderer.setScissor(0, 0, w / 2, h);
         renderer.render(scene, camera);
 
-        // Right Eye Viewport (Layer 2 + Layer 0)
+        // Right Eye (Layer 2 + Layer 0)
         camera.layers.set(2);
         camera.layers.enable(0);
         renderer.setViewport(w / 2, 0, w / 2, h);

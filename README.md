@@ -10,8 +10,13 @@ Traditional stereoscopic photogrammetry has historically depended on expensive, 
 
 This project implements a modern, accessible photogrammetry pipeline:
 * **Optical Isolation:** Complete stereoscopic separation (Left eye $\to$ Left photo, Right eye $\to$ Right photo) using Three.js WebXR camera layers (`layers.set(1)` and `layers.set(2)`).
-* **3D Floating Mark:** An illuminated stereoscopic measuring cursor with adjustable disparity ($p_x$) and 3D depth convergence.
-* **Vector Digitizer:** 3D vector extraction (`PointZ`, `LineStringZ`, `PolygonZ`) directly from the stereo model.
+* **Summit Evolution Roaming & Image Parallax Engine:**
+  * **Central Floating Mark:** The measuring reticle sits fixed in the center of the display at (0, 0) with zero eye vergence strain.
+  * **Dynamic Image Roaming (X, Y):** Left Stick roams the aerial imagery smoothly beneath the central mark.
+  * **Relative Image Parallax (Z-Wheel):** Right Stick Up/Down shifts the Right Image horizontally relative to the Left Image. As you spin the Z-wheel, the feature under the crosshair shifts until both eye images fuse into solid 3D depth at the reticle!
+  * **Base Parallax Datum Calibration:** Calibrated datum offset (-60px for Vaihingen) eliminates forced eye vergence and image double-overlap.
+  * **Zoom Magnification:** Right Stick Left/Right smoothly magnifies the stereo view from 0.5x to 3.5x.
+* **Vector Digitizer:** 3D CAD/GIS vectors parented directly to Left and Right image planes with full Undo/Redo/Erase history.
 * **QGIS / CAD Integration:** Live synchronization to PyQGIS vector layers and export to 3D GeoJSON and AutoCAD DXF.
 
 ---
@@ -71,11 +76,17 @@ python3 viewer/server.py
 #### Meta Quest 2 Controller Controls
 | Controller | Action | Description |
 | :--- | :--- | :--- |
+| **Left or Right Grip** | **Grab & Drag Canvas** | Squeeze grip to grab the workstation in 3D and drag it anywhere (push further away, pull closer, raise, lower, tilt). |
+| **Both Grips (Simultaneous)** | **Two-Handed Pinch Scale** | Squeeze both grips and move hands apart/together to scale & zoom the stereo canvas. |
+| **Left Stick Click** | **Reset View** | Re-centers the stereo model directly in front of your head at a comfortable 2.4m distance. |
 | **Left Thumbstick** | **Roam X / Y** | Move the floating mark across the stereo model (Easting / Northing). |
-| **Right Thumbstick (Up / Down)** | **Elevate Z** | Adjust stereoscopic depth / elevation. Raises or lowers the mark. |
-| **Right Trigger** | **Digitize Vertex** | Adds a 3D vertex at the current $(X, Y, Z)$ ground coordinate (with haptic click). |
+| **Right Thumbstick (Up / Down)** | **Elevate Z** | Adjust stereoscopic depth / elevation. Raises or lowers the mark to fuse on rooftops/ground. |
+| **Right Trigger** | **Digitize Vertex** | Adds a 3D vertex at the current $(X, Y, Z)$ ground coordinate (with haptic click). Also clicks HUD buttons when pointing at the HUD. |
+| **Left Button X** | **Undo** | Reverts the last digitized vertex or undone feature. |
+| **Left Button Y** | **Redo** | Restores the previously reverted action. |
 | **Right Button A** | **Cycle Tool** | Switch digitizer between `PointZ`, `LineStringZ`, and `PolygonZ`. |
 | **Right Button B** | **Finish Feature** | Complete the active line/polygon and start a new feature. |
+| **Laser Pointer on HUD** | **Touch Tablet** | Aim at the In-VR HUD to click **Undo**, **Redo**, **Clear All**, **Reset View**, or **Tool**. |
 
 ---
 

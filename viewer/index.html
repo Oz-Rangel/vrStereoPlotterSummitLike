@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>QGIS VR Photogrammetry - Stereoscopic Workstation</title>
+    <title>QGIS VR Photogrammetry - Summit Evolution Stereoplotter</title>
     <link rel="stylesheet" href="css/style.css">
     <!-- Import map for modern Three.js modules -->
     <script type="importmap">
@@ -23,27 +23,32 @@
         <!-- Top Bar -->
         <header class="top-bar">
             <div class="branding">
-                <span class="logo-badge">VR-Stereo</span>
+                <span class="logo-badge">Summit-VR</span>
                 <div class="title-group">
-                    <h1>Stereoscopic Photogrammetric Station</h1>
-                    <span>Digital Stereoplotter Engine for Meta Quest 2 / QGIS</span>
+                    <h1>Summit Evolution Digital Stereoplotter Engine</h1>
+                    <span>Dynamic Image Parallax & Roaming Workstation for Meta Quest 2 / QGIS</span>
                 </div>
             </div>
 
             <div class="mode-selectors">
-                <!-- Stereo Mode Selector for Desktop -->
+                <!-- Dataset Selector -->
+                <div class="btn-group" id="dataset-group">
+                    <button class="btn-toggle active" data-dataset="synth" id="btn-dataset-synth">📐 Synth</button>
+                    <button class="btn-toggle" data-dataset="real" id="btn-dataset-real">🗺 Vaihingen</button>
+                    <button class="btn-toggle" data-dataset="aurrera" id="btn-dataset-aurrera">🚁 Aurrera</button>
+                    <button class="btn-toggle" data-dataset="custom" id="btn-dataset-custom">📂 Custom</button>
+                </div>
+
+                <!-- Desktop Stereo Mode -->
                 <div class="btn-group" id="display-mode-group">
                     <button class="btn-toggle active" data-mode="mono">Mono</button>
                     <button class="btn-toggle" data-mode="sbs">Side-by-Side</button>
-                    <button class="btn-toggle" data-mode="anaglyph">Anaglyph (Red/Cyan)</button>
                 </div>
 
-                <!-- Custom Image Upload -->
-                <button class="btn-action" id="btn-custom-pair" title="Load custom Left and Right stereo images">
-                    📂 Load Stereo Pair
+                <!-- Reset View -->
+                <button class="btn-action" id="btn-reset-view" title="Re-center stereoplotter window">
+                    🎯 Center View
                 </button>
-                <input type="file" id="file-left-input" accept="image/png,image/jpeg,image/webp" style="display:none">
-                <input type="file" id="file-right-input" accept="image/png,image/jpeg,image/webp" style="display:none">
 
                 <!-- Export Data -->
                 <button class="btn-action" id="btn-export-geojson">
@@ -56,7 +61,7 @@
         <div class="main-layout">
             <!-- Left Panel: Real-time Photogrammetric Telemetry -->
             <aside class="panel">
-                <h2>Photogrammetric Telemetry</h2>
+                <h2>Summit Telemetry</h2>
                 <div class="telemetry-grid">
                     <div class="telemetry-card">
                         <div class="label">Ground X (E)</div>
@@ -71,27 +76,49 @@
                         <div class="value" id="val-z">0.00 m</div>
                     </div>
                     <div class="telemetry-card">
-                        <div class="label">Parallax (px)</div>
-                        <div class="value" id="val-parallax">0.00 px</div>
+                        <div class="label">Image Parallax</div>
+                        <div class="value" id="val-parallax">-60.0 px</div>
                     </div>
                 </div>
 
-                <h2>3D Floating Mark Controls</h2>
+                <h2>Summit Stereo Controls</h2>
+                <div class="feature-stats" style="margin-top: 2px;">
+                    <div class="stat-row">
+                        <span class="label">Base Parallax Offset:</span>
+                        <span id="stat-base-parallax">-60.0 px</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="label">Zoom Magnification:</span>
+                        <span id="stat-zoom-level">1.0x</span>
+                    </div>
+                </div>
+                <div style="display: flex; gap: 6px; margin-top: 6px;">
+                    <button class="btn-toggle" id="btn-base-p-minus" style="flex:1;">- Base px</button>
+                    <button class="btn-toggle" id="btn-base-p-plus" style="flex:1;">+ Base px</button>
+                    <button class="btn-toggle" id="btn-base-p-zero" style="flex:1;">Zero (0)</button>
+                </div>
+                <div style="display: flex; gap: 6px; margin-top: 6px;">
+                    <button class="btn-toggle" id="btn-flip-x" style="flex:1;" title="Mirror left-right">Flip H</button>
+                    <button class="btn-toggle" id="btn-flip-y" style="flex:1;" title="Mirror top-bottom">Flip V</button>
+                </div>
+
+                <h2>Summit Evolution Mechanics</h2>
+                <div class="instructions" style="font-size: 11px;">
+                    <p style="color: #00d4ff;"><strong>• Central Floating Mark:</strong> Reticle is fixed at the center of the display.</p>
+                    <p style="color: #33ff99; margin-top: 4px;"><strong>• Roaming Imagery:</strong> Left Stick pans the terrain smoothly beneath the central mark.</p>
+                    <p style="color: #ffd700; margin-top: 4px;"><strong>• Z-Index Image Parallax:</strong> Right Stick shifts the images relative to each other until the rooftop fuses at the mark with zero eye strain!</p>
+                </div>
+
+                <h2>VR Headset Controls</h2>
                 <div class="instructions">
-                    <p><strong>VR Headset (Quest 2):</strong></p>
                     <ul style="padding-left: 18px; margin-top: 4px; display: flex; flex-direction: column; gap: 4px;">
-                        <li><span class="kbd-badge">Left Thumbstick</span> Roam X / Y across photos</li>
-                        <li><span class="kbd-badge">Right Stick Up/Down</span> Adjust Elevation Z (Depth)</li>
-                        <li><span class="kbd-badge">Right Trigger</span> Digitize 3D Vertex</li>
-                        <li><span class="kbd-badge">B / Y Button</span> Finish Feature / Undo</li>
-                    </ul>
-                    <hr style="border: 0; border-top: 1px solid var(--border-color); margin: 8px 0;">
-                    <p><strong>Desktop / Mouse Controls:</strong></p>
-                    <ul style="padding-left: 18px; margin-top: 4px; display: flex; flex-direction: column; gap: 4px;">
-                        <li><span class="kbd-badge">Mouse Drag / Arrows</span> Roam X / Y</li>
-                        <li><span class="kbd-badge">Mouse Wheel / W-S</span> Elevate Z (Disparity)</li>
-                        <li><span class="kbd-badge">Space / Click</span> Place Vertex</li>
-                        <li><span class="kbd-badge">Enter</span> Finish Line / Polygon</li>
+                        <li><span class="kbd-badge">Left Stick</span> <strong>Roam Terrain (X, Y)</strong> beneath mark</li>
+                        <li><span class="kbd-badge">Right Stick Up/Down</span> <strong>Shift Image Parallax (Z)</strong> to fuse surface</li>
+                        <li><span class="kbd-badge">Right Stick Left/Right</span> <strong>Zoom In / Out</strong></li>
+                        <li><span class="kbd-badge">Right Trigger</span> <strong>Digitize 3D Vertex</strong></li>
+                        <li><span class="kbd-badge">Left Grip</span> <strong>Reposition Station</strong> in 3D</li>
+                        <li><span class="kbd-badge">Left Button X</span> <strong>Undo</strong> | <span class="kbd-badge">Y</span> <strong>Redo</strong></li>
+                        <li><span class="kbd-badge">Right Button A</span> Cycle Tool | <span class="kbd-badge">B</span> Finish Feature</li>
                     </ul>
                 </div>
             </aside>
@@ -112,7 +139,7 @@
                             <span id="stat-active-tool">LineStringZ</span>
                         </div>
                         <div class="stat-row">
-                            <span class="label">Current Feature Vertices:</span>
+                            <span class="label">Current Vertices:</span>
                             <span id="stat-vertex-count">0</span>
                         </div>
                         <div class="stat-row">
@@ -120,31 +147,72 @@
                             <span id="stat-feature-count">0</span>
                         </div>
                         <div class="stat-row">
-                            <span class="label">CRS / Units:</span>
-                            <span>Local Photogrammetric (Meters)</span>
+                            <span class="label">Undo / Redo Steps:</span>
+                            <span id="stat-history-count">0 / 0</span>
                         </div>
                     </div>
 
+                    <!-- Action Buttons: Finish, Undo, Redo, Clear -->
                     <div style="display: flex; gap: 6px; margin-top: 6px;">
                         <button class="btn-action" id="btn-finish-feature" style="flex: 1;">Finish Feature</button>
-                        <button class="btn-toggle" id="btn-undo-point">Undo</button>
-                        <button class="btn-toggle" id="btn-clear-all" style="color: var(--danger-color);">Clear</button>
+                    </div>
+                    <div style="display: flex; gap: 6px; margin-top: 4px;">
+                        <button class="btn-toggle" id="btn-undo-point" style="flex: 1;">↶ Undo</button>
+                        <button class="btn-toggle" id="btn-redo-point" style="flex: 1;">↷ Redo</button>
+                        <button class="btn-toggle" id="btn-clear-all" style="color: var(--danger-color); flex: 1;">🗑 Clear All</button>
                     </div>
                 </div>
 
-                <h2>Calibrated Targets in Test Pair</h2>
-                <div class="instructions" style="font-size: 11px;">
-                    <div>• <strong>Building A (Top Left):</strong> Roof Z = 45m (HVAC Z = 55m)</div>
-                    <div>• <strong>Tower (Bottom Right):</strong> Roof Z = 80m (Spire Z = 110m)</div>
-                    <div>• <strong>Terraced Hill (Top Left):</strong> Z = 10m, 20m, 35m</div>
-                    <div>• <strong>Excavation Pit:</strong> Depth Z = -25m, -40m</div>
-                    <div>• <strong>Yellow GCPs:</strong> Ground reference Z = 0m</div>
+                <h2>Active Dataset Information</h2>
+                <div class="instructions" id="dataset-info-box" style="font-size: 11px;">
+                    <div>• <strong>Dataset:</strong> Synthetic Calibrated Stereopair</div>
+                    <div>• <strong>Base Parallax:</strong> 0.0 px</div>
+                    <div>• <strong>Targets:</strong> Bldg A: 45m | Tower: 80m | Spire: 110m</div>
+                    <div>• <strong>Contours:</strong> Terraced Hill: 10m, 20m, 35m</div>
                 </div>
             </aside>
         </div>
 
         <!-- The VR Button will be inserted here by Three.js -->
         <div class="vr-banner" id="vr-btn-container"></div>
+    </div>
+
+    <!-- Custom Stereo Pair Loader Modal -->
+    <div id="custom-pair-modal" class="modal-overlay" hidden>
+        <div class="modal-card" role="dialog" aria-labelledby="custom-pair-title">
+            <div class="modal-header">
+                <h2 id="custom-pair-title">Load Custom Stereo Pair</h2>
+                <button type="button" class="modal-close" id="btn-close-custom-modal" aria-label="Close">&times;</button>
+            </div>
+            <p class="modal-hint">
+                Choose left and right eye photos (PNG, JPEG, or WebP).
+                For Summit Evolution TIFFs, first run
+                <code>python viewer/process_aurrera_pair.py &lt;ModelName&gt;</code>
+                then load the generated PNGs from <code>viewer/assets/</code>.
+            </p>
+            <div class="file-pick-row">
+                <div class="file-pick-card">
+                    <span class="file-pick-label">Left Eye</span>
+                    <span class="file-pick-name" id="custom-left-name">No file selected</span>
+                    <button type="button" class="btn-toggle" id="btn-pick-left">Choose Left…</button>
+                </div>
+                <div class="file-pick-card">
+                    <span class="file-pick-label">Right Eye</span>
+                    <span class="file-pick-name" id="custom-right-name">No file selected</span>
+                    <button type="button" class="btn-toggle" id="btn-pick-right">Choose Right…</button>
+                </div>
+            </div>
+            <label class="modal-field">
+                <span>Base parallax (px)</span>
+                <input type="number" id="custom-base-parallax" value="0" step="1">
+            </label>
+            <div class="modal-actions">
+                <button type="button" class="btn-toggle" id="btn-cancel-custom">Cancel</button>
+                <button type="button" class="btn-action" id="btn-apply-custom" disabled>Load Pair</button>
+            </div>
+            <input type="file" id="file-left-input" accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp" hidden>
+            <input type="file" id="file-right-input" accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp" hidden>
+        </div>
     </div>
 
     <!-- Application Script -->

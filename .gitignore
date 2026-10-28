@@ -1,22 +1,8 @@
-# Aider
+# Summitev directory
+SummitEV/
 .aider*
 
-# SSL Certificates (Auto-generated locally for WebXR)
-*.pem
-*.key
-*.crt
-
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-.venv/
-venv/
-
-# Node
-node_modules/
-
-# OS / Editor
 .DS_Store
-.vscode/
-.idea/
+
+viewer/cert.pem
+viewer/key.pem
