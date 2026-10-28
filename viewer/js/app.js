@@ -148,6 +148,17 @@ function setupControllers() {
     scene.add(controllerGripLeft, controllerGripRight);
 
     for (const c of [controllerLeft, controllerRight]) {
+        // Three.js does NOT populate userData.inputSource automatically.
+        // Without this, readGamepad() returns null and no VR input fires.
+        c.addEventListener('connected', (event) => {
+            c.userData.inputSource = event.data;
+            c.userData.gamepad = event.data?.gamepad || null;
+        });
+        c.addEventListener('disconnected', () => {
+            c.userData.inputSource = null;
+            c.userData.gamepad = null;
+        });
+
         const geo = new THREE.BufferGeometry().setFromPoints([
             new THREE.Vector3(0, 0, 0),
             new THREE.Vector3(0, 0, -1)

@@ -150,7 +150,7 @@ test('012 - computeVertexLocal keeps conjugate vertices on one horizontal scanli
   // 100 m * 0.5 px/m = 50 px -> (50 / 1024) * 2.2 == 0.107421875 m
   approx(elevated.left.y, 0, 1e-12, 'elevated left y');
   approx(elevated.right.y, elevated.left.y, 1e-12, 'elevated right y matches');
-  assert.equal(elevated.right.x, -0.107421875);
+  approx(elevated.right.x, -0.107421875, 1e-12, 'elevated right x');
 
   // Top-left corner sanity check on the left plane.
   const corner = computeVertexLocal({
