@@ -104,14 +104,14 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0a0d12);
 
 const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 100);
-camera.position.set(0, 1.4, 2.6);
-camera.lookAt(0, 1.2, 0);
+camera.position.set(0, 1.4, 0.6);
+camera.lookAt(0, 1.2, -2.0);
 camera.layers.enable(1);              // desktop mono view renders the left-eye plane
 
 scene.add(new THREE.AmbientLight(0xffffff, 1.2));
 
 const workstationGroup = sceneApi.init();
-workstationGroup.position.set(0, 1.2, 0);
+workstationGroup.position.set(0, 1.2, -2.0);
 scene.add(workstationGroup);
 
 // ============================================================
@@ -417,9 +417,9 @@ function toggleDataset(target = null) {
 }
 
 function resetWorkstationView() {
-    camera.position.set(0, 1.4, 2.6);
-    camera.lookAt(0, 1.2, 0);
-    workstationGroup.position.set(0, 1.2, 0);
+    camera.position.set(0, 1.4, 0.6);
+    camera.lookAt(0, 1.2, -2.0);
+    workstationGroup.position.set(0, 1.2, -2.0);
     workstationGroup.rotation.set(0, 0, 0);
     updateSummitPositions();
 }

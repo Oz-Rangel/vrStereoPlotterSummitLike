@@ -66,6 +66,7 @@ export function createDigitizerBridge({
             new THREE.LineBasicMaterial({ color: 0x00d4ff, linewidth: 2, depthTest: false })
         );
         lineL.layers.set(1);
+        lineL.renderOrder = 500;
         groups.left.add(lineL);
         activeLineMeshLeft = lineL;
 
@@ -74,6 +75,7 @@ export function createDigitizerBridge({
             new THREE.LineBasicMaterial({ color: 0x00d4ff, linewidth: 2, depthTest: false })
         );
         lineR.layers.set(2);
+        lineR.renderOrder = 500;
         groups.right.add(lineR);
         activeLineMeshRight = lineR;
     }
@@ -92,12 +94,14 @@ export function createDigitizerBridge({
         const meshL = new THREE.Mesh(geo, matL);
         meshL.position.set(local.left.x, local.left.y, 0.002);
         meshL.layers.set(1);
+        meshL.renderOrder = 500;
         groups.left.add(meshL);
 
         const matR = new THREE.MeshBasicMaterial({ color: 0x33ff99, depthTest: false, side: THREE.DoubleSide });
         const meshR = new THREE.Mesh(geo, matR);
         meshR.position.set(local.right.x, local.right.y, 0.002);
         meshR.layers.set(2);
+        meshR.renderOrder = 500;
         groups.right.add(meshR);
 
         vertex.refs = { meshL, meshR };

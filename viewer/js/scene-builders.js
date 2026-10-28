@@ -45,27 +45,43 @@ export function buildStereoWindowFrame({ w, h, previous, workstationGroup, vrHud
 
 export function createCentralFloatingMark(workstationGroup) {
     const mark = new THREE.Group();
-    mark.layers.enable(0);
 
-    const dotGeo = new THREE.CircleGeometry(0.005, 16);
-    const dotMat = new THREE.MeshBasicMaterial({ color: 0x00ffff, depthTest: false, side: THREE.DoubleSide });
-    mark.add(new THREE.Mesh(dotGeo, dotMat));
+    const dot = new THREE.Mesh(
+        new THREE.CircleGeometry(0.005, 16),
+        new THREE.MeshBasicMaterial({
+            color: 0x00ffff, transparent: true, opacity: 1,
+            depthTest: false, depthWrite: false, side: THREE.DoubleSide
+        })
+    );
+    dot.renderOrder = 999;
+    mark.add(dot);
 
-    const ringGeo = new THREE.RingGeometry(0.016, 0.019, 32);
-    const ringMat = new THREE.MeshBasicMaterial({ color: 0x00d4ff, depthTest: false, side: THREE.DoubleSide });
-    mark.add(new THREE.Mesh(ringGeo, ringMat));
+    const ring = new THREE.Mesh(
+        new THREE.RingGeometry(0.016, 0.019, 32),
+        new THREE.MeshBasicMaterial({
+            color: 0x00d4ff, transparent: true, opacity: 1,
+            depthTest: false, depthWrite: false, side: THREE.DoubleSide
+        })
+    );
+    ring.renderOrder = 999;
+    mark.add(ring);
 
-    const lineMat = new THREE.LineBasicMaterial({ color: 0x00d4ff, depthTest: false });
-    const linePoints = [
-        new THREE.Vector3(-0.035, 0, 0), new THREE.Vector3(-0.01, 0, 0),
-        new THREE.Vector3(0.01, 0, 0), new THREE.Vector3(0.035, 0, 0),
-        new THREE.Vector3(0, -0.035, 0), new THREE.Vector3(0, -0.01, 0),
-        new THREE.Vector3(0, 0.01, 0), new THREE.Vector3(0, 0.035, 0)
-    ];
-    mark.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(linePoints), lineMat));
+    const lines = new THREE.LineSegments(
+        new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(-0.035, 0, 0), new THREE.Vector3(-0.01, 0, 0),
+            new THREE.Vector3(0.01, 0, 0), new THREE.Vector3(0.035, 0, 0),
+            new THREE.Vector3(0, -0.035, 0), new THREE.Vector3(0, -0.01, 0),
+            new THREE.Vector3(0, 0.01, 0), new THREE.Vector3(0, 0.035, 0)
+        ]),
+        new THREE.LineBasicMaterial({
+            color: 0x00d4ff, transparent: true, opacity: 1,
+            depthTest: false, depthWrite: false
+        })
+    );
+    lines.renderOrder = 999;
+    mark.add(lines);
 
-    mark.position.set(0, 0, 0.006);
-    mark.renderOrder = 999;
+    mark.position.set(0, 0, 0.03);
     workstationGroup.add(mark);
 
     return mark;
