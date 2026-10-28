@@ -2,6 +2,9 @@ import * as THREE from 'three';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
+import { DATASETS, DATASET_CYCLE, PLANE_BASE_SIZE, hasCustomPair, setCustomPair } from './datasets.js';
+import * as StereoMath from './stereo-math.js';
+
 /* ==========================================================================
    Photogrammetric Stereoplotter Engine (Summit Evolution Architecture)
    
@@ -18,70 +21,10 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
       Calibrated datum offset (-60px for Vaihingen) eliminates forced eye vergence.
    5. Dynamic Zoom Magnification:
       Right Stick Left/Right zooms the stereo imagery from 0.5x to 3.5x.
+
+   All stereoplotter arithmetic lives in ./stereo-math.js (pure, unit-tested).
+   All built-in dataset metadata lives in ./datasets.js.
    ========================================================================== */
-
-// --- Built-in Stereo Datasets ---
-const DATASETS = {
-    synth: {
-        id: 'synth',
-        label: 'Calibration',
-        shortLabel: 'Synth',
-        left: 'assets/synthetic/left.png',
-        right: 'assets/synthetic/right.png',
-        baseParallax: 0.0,
-        infoHtml: `
-            <div>• <strong>Dataset:</strong> Synthetic Calibrated Stereopair</div>
-            <div>• <strong>Base Parallax:</strong> 0.0 px</div>
-            <div>• <strong>Targets:</strong> Bldg A: 45m | Tower: 80m | Spire: 110m</div>
-            <div>• <strong>Contours:</strong> Terraced Hill: 10m, 20m, 35m</div>
-        `
-    },
-    real: {
-        id: 'real',
-        label: 'Vaihingen Aerial',
-        shortLabel: 'Aerial',
-        left: 'assets/real_aerial/left.png',
-        right: 'assets/real_aerial/right.png',
-        baseParallax: -60.0,
-        infoHtml: `
-            <div>• <strong>Dataset:</strong> ISPRS Vaihingen Aerial Stereo Pair</div>
-            <div>• <strong>Base Parallax:</strong> -60.0 px (Aligned for zero ground strain)</div>
-            <div>• <strong>Workflow:</strong> Roam with Left Stick, adjust Z with Right Stick until rooftop fuses at the center crosshair, then pull trigger to digitize!</div>
-        `
-    },
-    aurrera: {
-        id: 'aurrera',
-        label: 'Aurrera (SummitEV)',
-        shortLabel: 'Aurrera',
-        left: 'assets/aurrera/left.png',
-        right: 'assets/aurrera/right.png',
-        baseParallax: 0.0,
-        flipX: true,
-        parallaxPerMeter: -0.5,
-        infoHtml: `
-            <div>• <strong>Dataset:</strong> Summit Evolution Aurrera DemoDron (Model 3_33+3_34)</div>
-            <div>• <strong>Source:</strong> Epipolar-rectified TIFF pair from SummitEV/Imagenes</div>
-            <div>• <strong>Base Parallax:</strong> 0.0 px (ground datum aligned)</div>
-            <div>• <strong>Orientation:</strong> Flip H on (toggle if it still looks mirrored)</div>
-            <div>• <strong>Tip:</strong> Generate other models with <code>python viewer/process_aurrera_pair.py &lt;ModelName&gt;</code></div>
-        `
-    },
-    custom: {
-        id: 'custom',
-        label: 'Custom Pair',
-        shortLabel: 'Custom',
-        left: null,
-        right: null,
-        baseParallax: 0.0,
-        infoHtml: `
-            <div>• <strong>Dataset:</strong> Custom user stereo pair</div>
-            <div>• <strong>Base Parallax:</strong> adjustable via Base px controls</div>
-            <div>• <strong>Formats:</strong> PNG, JPEG, WebP (preprocess SummitEV TIFFs first)</div>
-        `
-    }
-};
-
-const PLANE_BASE_SIZE = 2.2; // meters — longest image side maps to this
 
 // --- Global Application State ---
 const state = {
@@ -310,21 +253,15 @@ function createStereoWindowFrame() {
 
 /** Fit the 3D stereo planes to the loaded image aspect ratio. */
 function applyImageDimensions(imgWidth, imgHeight) {
-    const w = Math.max(1, imgWidth || 1024);
-    const h = Math.max(1, imgHeight || 1024);
-    state.model.widthUnits = w;
-    state.model.heightUnits = h;
+    const dims = StereoMath.computeImageDimensions(imgWidth, imgHeight, PLANE_BASE_SIZE);
 
-    if (w >= h) {
-        state.model.planeWidth3D = PLANE_BASE_SIZE;
-        state.model.planeHeight3D = PLANE_BASE_SIZE * (h / w);
-    } else {
-        state.model.planeHeight3D = PLANE_BASE_SIZE;
-        state.model.planeWidth3D = PLANE_BASE_SIZE * (w / h);
-    }
+    state.model.widthUnits = dims.widthUnits;
+    state.model.heightUnits = dims.heightUnits;
+    state.model.planeWidth3D = dims.planeWidth3D;
+    state.model.planeHeight3D = dims.planeHeight3D;
 
-    state.cursor.x = w / 2;
-    state.cursor.y = h / 2;
+    state.cursor.x = dims.widthUnits / 2;
+    state.cursor.y = dims.heightUnits / 2;
     createStereoWindowFrame();
 }
 
@@ -511,28 +448,32 @@ function updateSummitPositions() {
     leftPlane.scale.set(state.model.zoom, state.model.zoom, 1);
     rightPlane.scale.set(state.model.zoom, state.model.zoom, 1);
 
-    const currentW = state.model.planeWidth3D * state.model.zoom;
-    const currentH = state.model.planeHeight3D * state.model.zoom;
-
     // Compute Total Parallax: Base Parallax + Elevation Parallax
-    state.cursor.totalParallax = state.model.baseParallax + (state.cursor.z * state.model.parallaxPerMeter);
+    state.cursor.totalParallax = StereoMath.computeTotalParallax({
+        baseParallax: state.model.baseParallax,
+        z: state.cursor.z,
+        parallaxPerMeter: state.model.parallaxPerMeter
+    });
 
-    // Normalized coordinates of Roaming Center (0..1024 -> -0.5..+0.5)
-    const normX = (state.cursor.x / state.model.widthUnits) - 0.5;
-    const normY = 0.5 - (state.cursor.y / state.model.heightUnits);
+    // Roaming + Parallax placement (see stereo-math.js for the derivation)
+    const placement = StereoMath.computePlanePositions({
+        cursorX: state.cursor.x,
+        cursorY: state.cursor.y,
+        widthUnits: state.model.widthUnits,
+        heightUnits: state.model.heightUnits,
+        planeWidth3D: state.model.planeWidth3D,
+        planeHeight3D: state.model.planeHeight3D,
+        zoom: state.model.zoom,
+        totalParallax: state.cursor.totalParallax
+    });
 
-    // Horizontal shift in 3D meters corresponding to disparity:
-    // disp3D = (totalParallax / widthUnits) * currentW
-    const disp3D = (state.cursor.totalParallax / state.model.widthUnits) * currentW;
+    // 1. LEFT IMAGE PLANE (Layer 1): ground point sits under the Central Reticle
+    leftPlane.position.set(placement.left.x, placement.left.y, placement.left.z);
 
-    // 1. POSITION LEFT IMAGE PLANE (Layer 1):
-    // Brings Ground Point (cursor.x, cursor.y) directly under Central Reticle (0, 0)
-    leftPlane.position.set(-normX * currentW, -normY * currentH, 0);
-
-    // 2. POSITION RIGHT IMAGE PLANE (Layer 2):
-    // Shifts horizontally by disparity so that conjugate point aligns under Central Reticle (0, 0)
-    // When the rooftop features align under the central mark, they fuse into solid 3D depth!
-    rightPlane.position.set(-normX * currentW + disp3D, -normY * currentH, 0);
+    // 2. RIGHT IMAGE PLANE (Layer 2): same, shifted by the disparity offset
+    //    When conjugate rooftop features align under the central mark,
+    //    they fuse into solid 3D depth!
+    rightPlane.position.set(placement.right.x, placement.right.y, placement.right.z);
 
     // Update Telemetry Display
     document.getElementById('val-x').textContent = state.cursor.x.toFixed(2) + ' m';
@@ -837,8 +778,17 @@ function handleLeftController(gp, deltaTime) {
     const stickY = Math.abs(axes[3] || 0) > 0.15 ? (axes[3] || 0) : 0;
     const roamSpeed = (240.0 / state.model.zoom) * deltaTime; // Adaptive speed by zoom
 
-    state.cursor.x = Math.max(0, Math.min(state.model.widthUnits, state.cursor.x + stickX * roamSpeed));
-    state.cursor.y = Math.max(0, Math.min(state.model.heightUnits, state.cursor.y + stickY * roamSpeed));
+    const panned = StereoMath.panCursor({
+        x: state.cursor.x,
+        y: state.cursor.y,
+        dx: stickX,
+        dy: stickY,
+        speed: roamSpeed,
+        widthUnits: state.model.widthUnits,
+        heightUnits: state.model.heightUnits
+    });
+    state.cursor.x = panned.x;
+    state.cursor.y = panned.y;
 
     // Button X: Undo
     const btnX = buttons[4] && buttons[4].pressed;
@@ -870,15 +820,14 @@ function handleRightController(gp, deltaTime) {
 
     // RIGHT STICK UP/DOWN: SHIFT IMAGE PARALLAX (ELEVATION Z)
     const stickY = Math.abs(axes[3] || 0) > 0.15 ? (axes[3] || 0) : 0;
-    const zSpeed = 40.0 * deltaTime;
     if (stickY !== 0) {
-        state.cursor.z = Math.max(-150, Math.min(300, state.cursor.z - stickY * zSpeed));
+        state.cursor.z = StereoMath.applyElevationStep(state.cursor.z, -stickY * 40.0 * deltaTime);
     }
 
     // RIGHT STICK LEFT/RIGHT: ZOOM IN / OUT
     const stickX = Math.abs(axes[2] || 0) > 0.25 ? (axes[2] || 0) : 0;
     if (stickX !== 0) {
-        state.model.zoom = Math.max(0.5, Math.min(3.5, state.model.zoom + stickX * deltaTime * 1.5));
+        state.model.zoom = StereoMath.applyZoomStep(state.model.zoom, stickX * deltaTime * 1.5);
     }
 
     // Right Trigger: Digitize Vertex at Central Reticle
@@ -911,23 +860,24 @@ function digitizeCurrentVertex() {
     const pt = [state.cursor.x, state.cursor.y, state.cursor.z];
     state.activeFeature.push(pt);
 
-    // Compute Local Coordinates on Image Plane Geometry (-w/2..+w/2)
-    const normX = (pt[0] / state.model.widthUnits) - 0.5;
-    const normY = 0.5 - (pt[1] / state.model.heightUnits);
-    const localX_L = normX * state.model.planeWidth3D;
-    const localY_L = normY * state.model.planeHeight3D;
-
-    // On Right Image, conjugate feature is at (X - disparity):
-    const disp = state.model.baseParallax + (pt[2] * state.model.parallaxPerMeter);
-    const dispLocal = (disp / state.model.widthUnits) * state.model.planeWidth3D;
-    const localX_R = localX_L - dispLocal;
-    const localY_R = localY_L;
+    // Plane-local coordinates on each eye plane (see stereo-math.js)
+    const local = StereoMath.computeVertexLocal({
+        px: pt[0],
+        py: pt[1],
+        z: pt[2],
+        baseParallax: state.model.baseParallax,
+        parallaxPerMeter: state.model.parallaxPerMeter,
+        widthUnits: state.model.widthUnits,
+        heightUnits: state.model.heightUnits,
+        planeWidth3D: state.model.planeWidth3D,
+        planeHeight3D: state.model.planeHeight3D
+    });
 
     // Left Vertex Mesh (child of leftPlane)
     const vGeo = new THREE.CircleGeometry(0.008, 16);
     const vMatL = new THREE.MeshBasicMaterial({ color: 0x33ff99, depthTest: false, side: THREE.DoubleSide });
     const vMeshL = new THREE.Mesh(vGeo, vMatL);
-    vMeshL.position.set(localX_L, localY_L, 0.002);
+    vMeshL.position.set(local.left.x, local.left.y, 0.002);
     vMeshL.layers.set(1);
     vectorGroupLeft.add(vMeshL);
     activeVertexMeshesLeft.push(vMeshL);
@@ -935,7 +885,7 @@ function digitizeCurrentVertex() {
     // Right Vertex Mesh (child of rightPlane)
     const vMatR = new THREE.MeshBasicMaterial({ color: 0x33ff99, depthTest: false, side: THREE.DoubleSide });
     const vMeshR = new THREE.Mesh(vGeo, vMatR);
-    vMeshR.position.set(localX_R, localY_R, 0.002);
+    vMeshR.position.set(local.right.x, local.right.y, 0.002);
     vMeshR.layers.set(2);
     vectorGroupRight.add(vMeshR);
     activeVertexMeshesRight.push(vMeshR);
@@ -976,18 +926,20 @@ function updateActiveLineMesh() {
     const pointsR = [];
 
     state.activeFeature.forEach(pt => {
-        const normX = (pt[0] / state.model.widthUnits) - 0.5;
-        const normY = 0.5 - (pt[1] / state.model.heightUnits);
-        const localX_L = normX * state.model.planeWidth3D;
-        const localY_L = normY * state.model.planeHeight3D;
+        const local = StereoMath.computeVertexLocal({
+            px: pt[0],
+            py: pt[1],
+            z: pt[2],
+            baseParallax: state.model.baseParallax,
+            parallaxPerMeter: state.model.parallaxPerMeter,
+            widthUnits: state.model.widthUnits,
+            heightUnits: state.model.heightUnits,
+            planeWidth3D: state.model.planeWidth3D,
+            planeHeight3D: state.model.planeHeight3D
+        });
 
-        const disp = state.model.baseParallax + (pt[2] * state.model.parallaxPerMeter);
-        const dispLocal = (disp / state.model.widthUnits) * state.model.planeWidth3D;
-        const localX_R = localX_L - dispLocal;
-        const localY_R = localY_L;
-
-        pointsL.push(new THREE.Vector3(localX_L, localY_L, 0.002));
-        pointsR.push(new THREE.Vector3(localX_R, localY_R, 0.002));
+        pointsL.push(new THREE.Vector3(local.left.x, local.left.y, 0.002));
+        pointsR.push(new THREE.Vector3(local.right.x, local.right.y, 0.002));
     });
 
     // Left Eye Line (child of leftPlane)
@@ -1143,8 +1095,6 @@ function cycleTool() {
     updateVRHudTexture();
 }
 
-const DATASET_CYCLE = ['synth', 'real', 'aurrera', 'custom'];
-
 function syncDatasetButtons(activeId) {
     document.querySelectorAll('#dataset-group .btn-toggle').forEach((btn) => {
         btn.classList.toggle('active', btn.dataset.dataset === activeId);
@@ -1178,7 +1128,7 @@ function toggleDataset(target = null) {
         for (let i = 0; i < DATASET_CYCLE.length; i++) {
             idx = (idx + 1) % DATASET_CYCLE.length;
             const candidate = DATASET_CYCLE[idx];
-            if (candidate === 'custom' && !(DATASETS.custom.left && DATASETS.custom.right)) {
+            if (candidate === 'custom' && !hasCustomPair()) {
                 continue;
             }
             newTarget = candidate;
@@ -1186,7 +1136,7 @@ function toggleDataset(target = null) {
         }
     }
 
-    if (newTarget === 'custom' && !(DATASETS.custom.left && DATASETS.custom.right)) {
+    if (newTarget === 'custom' && !hasCustomPair()) {
         openCustomPairModal();
         return;
     }
@@ -1253,9 +1203,14 @@ function applyCustomStereoPair() {
     state.currentDataset = 'custom';
     state.cursor.z = 0.0;
     state.model.zoom = 1.0;
-    DATASETS.custom.baseParallax = basePx;
-    DATASETS.custom.left = customPairState.leftUrl;
-    DATASETS.custom.right = customPairState.rightUrl;
+
+    setCustomPair({
+        left: customPairState.leftUrl,
+        right: customPairState.rightUrl,
+        baseParallax: basePx,
+        parallaxPerMeter: 0.5
+    });
+
     syncDatasetButtons('custom');
     closeCustomPairModal();
 
@@ -1289,35 +1244,35 @@ function setupKeyboardAndMouse() {
         switch (e.key.toLowerCase()) {
             case 'arrowleft':
             case 'a':
-                state.cursor.x = Math.max(0, state.cursor.x - step);
+                state.cursor.x = StereoMath.clamp(state.cursor.x - step, 0, state.model.widthUnits);
                 break;
             case 'arrowright':
             case 'd':
-                state.cursor.x = Math.min(state.model.widthUnits, state.cursor.x + step);
+                state.cursor.x = StereoMath.clamp(state.cursor.x + step, 0, state.model.widthUnits);
                 break;
             case 'arrowup':
             case 'w':
-                state.cursor.y = Math.min(state.model.heightUnits, state.cursor.y + step);
+                state.cursor.y = StereoMath.clamp(state.cursor.y + step, 0, state.model.heightUnits);
                 break;
             case 'arrowdown':
             case 's':
-                state.cursor.y = Math.max(0, state.cursor.y - step);
+                state.cursor.y = StereoMath.clamp(state.cursor.y - step, 0, state.model.heightUnits);
                 break;
             case 'q':
             case 'pageup':
-                state.cursor.z = Math.min(300, state.cursor.z + 1.0);
+                state.cursor.z = StereoMath.applyElevationStep(state.cursor.z, 1.0);
                 break;
             case 'e':
             case 'pagedown':
-                state.cursor.z = Math.max(-150, state.cursor.z - 1.0);
+                state.cursor.z = StereoMath.applyElevationStep(state.cursor.z, -1.0);
                 break;
             case '+':
             case '=':
-                state.model.zoom = Math.min(3.5, state.model.zoom + 0.1);
+                state.model.zoom = StereoMath.applyZoomStep(state.model.zoom, 0.1);
                 break;
             case '-':
             case '_':
-                state.model.zoom = Math.max(0.5, state.model.zoom - 0.1);
+                state.model.zoom = StereoMath.applyZoomStep(state.model.zoom, -0.1);
                 break;
             case ' ':
                 digitizeCurrentVertex();
@@ -1341,7 +1296,7 @@ function setupKeyboardAndMouse() {
 
     window.addEventListener('wheel', (e) => {
         if (state.isVR) return;
-        state.cursor.z = Math.max(-150, Math.min(300, state.cursor.z + (e.deltaY < 0 ? 1.0 : -1.0)));
+        state.cursor.z = StereoMath.applyElevationStep(state.cursor.z, e.deltaY < 0 ? 1.0 : -1.0);
         updateSummitPositions();
     }, { passive: true });
 }

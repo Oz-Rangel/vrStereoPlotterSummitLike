@@ -2,9 +2,14 @@
   "name": "qgis-vr-photogrammetry",
   "version": "0.1.0",
   "description": "Stereoscopic Photogrammetric Workstation for QGIS and Meta Quest 2 via WebXR",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "start": "python3 viewer/server.py",
-    "generate-pair": "python3 viewer/generate_stereo_pair.py"
+    "generate-pair": "python3 viewer/generate_stereo_pair.py",
+    "test": "node --test viewer/js/stereo-math.test.js"
   },
   "keywords": [
     "photogrammetry",
