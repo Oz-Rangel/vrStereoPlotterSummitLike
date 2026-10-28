@@ -4,6 +4,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 import { DATASETS, DATASET_CYCLE, PLANE_BASE_SIZE, hasCustomPair, setCustomPair } from './datasets.js';
 import * as StereoMath from './stereo-math.js';
+import { HUD_CANVAS_WIDTH, HUD_CANVAS_HEIGHT, renderHud, hitTestHudButtons } from './vr-hud.js';
 
 /* ==========================================================================
    Photogrammetric Stereoplotter Engine (Summit Evolution Architecture)
@@ -24,6 +25,7 @@ import * as StereoMath from './stereo-math.js';
 
    All stereoplotter arithmetic lives in ./stereo-math.js (pure, unit-tested).
    All built-in dataset metadata lives in ./datasets.js.
+   All VR HUD rendering + hit-testing lives in ./vr-hud.js (pure).
    ========================================================================== */
 
 // --- Global Application State ---
@@ -96,14 +98,6 @@ const activeVertexMeshesRight = [];
 // VR HUD Tablet & Interaction
 let vrHudMesh, vrHudCanvas, vrHudCtx;
 let hoveredHudButton = null;
-const hudButtons = [
-    { id: 'undo', text: '↶ Undo', x: 15, y: 240, w: 90, h: 52 },
-    { id: 'redo', text: '↷ Redo', x: 110, y: 240, w: 90, h: 52 },
-    { id: 'dataset', text: '🗺 Dataset', x: 205, y: 240, w: 105, h: 52 },
-    { id: 'clear', text: '🗑 Clear', x: 315, y: 240, w: 95, h: 52 },
-    { id: 'reset', text: '🎯 Center', x: 415, y: 240, w: 105, h: 52 },
-    { id: 'tool', text: 'Tool: LineZ', x: 525, y: 240, w: 100, h: 52 }
-];
 
 // WebXR Controllers & Grabbing State
 const controllers = [];
@@ -489,8 +483,8 @@ function updateSummitPositions() {
 // --- In-VR Interactive HUD Tablet ---
 function createVRHud() {
     vrHudCanvas = document.createElement('canvas');
-    vrHudCanvas.width = 640;
-    vrHudCanvas.height = 320;
+    vrHudCanvas.width = HUD_CANVAS_WIDTH;
+    vrHudCanvas.height = HUD_CANVAS_HEIGHT;
     vrHudCtx = vrHudCanvas.getContext('2d');
 
     const texture = new THREE.CanvasTexture(vrHudCanvas);
@@ -507,82 +501,37 @@ function createVRHud() {
     updateVRHudTexture();
 }
 
+/**
+ * Build the pure view-model consumed by renderHud().
+ * Reads app state — never writes it. The VR HUD module stays ignorant of
+ * the Three.js scene graph and of app-level mutable state.
+ */
+function buildHudViewModel(laserUV = null) {
+    const dataset = DATASETS[state.currentDataset] || DATASETS.synth;
+    return {
+        cursorX: state.cursor.x,
+        cursorY: state.cursor.y,
+        cursorZ: state.cursor.z,
+        totalParallax: state.cursor.totalParallax,
+        baseParallax: state.model.baseParallax,
+        zoom: state.model.zoom,
+        datasetLabel: dataset.label,
+        datasetShortLabel: dataset.shortLabel,
+        activeTool: state.activeTool,
+        activeFeatureCount: state.activeFeature.length,
+        completedFeaturesCount: state.completedFeatures.length,
+        hoveredButtonId: hoveredHudButton,
+        laserUV
+    };
+}
+
+/**
+ * Thin wrapper: draws the HUD and marks the CanvasTexture dirty.
+ * All actual drawing lives in ./vr-hud.js renderHud().
+ */
 function updateVRHudTexture(laserUV = null) {
     if (!vrHudCtx) return;
-
-    vrHudCtx.clearRect(0, 0, 640, 320);
-    vrHudCtx.fillStyle = 'rgba(12, 17, 26, 0.94)';
-    vrHudCtx.strokeStyle = '#00d4ff';
-    vrHudCtx.lineWidth = 4;
-    vrHudCtx.beginPath();
-    vrHudCtx.roundRect(10, 10, 620, 300, 18);
-    vrHudCtx.fill();
-    vrHudCtx.stroke();
-
-    // Header
-    vrHudCtx.fillStyle = '#00d4ff';
-    vrHudCtx.font = 'bold 19px sans-serif';
-    vrHudCtx.fillText('SUMMIT EVOLUTION STEREOPLOTTER HUD', 25, 45);
-
-    // Telemetry Grid
-    vrHudCtx.fillStyle = '#8b949e';
-    vrHudCtx.font = '15px monospace';
-    vrHudCtx.fillText('GROUND X (E):', 25, 80);
-    vrHudCtx.fillText('GROUND Y (N):', 25, 110);
-    vrHudCtx.fillText('ELEVATION Z :', 25, 140);
-    vrHudCtx.fillText('PARALLAX px :', 25, 170);
-
-    vrHudCtx.fillStyle = '#ffffff';
-    vrHudCtx.font = 'bold 17px monospace';
-    vrHudCtx.fillText(`${state.cursor.x.toFixed(2)} m`, 180, 80);
-    vrHudCtx.fillText(`${state.cursor.y.toFixed(2)} m`, 180, 110);
-    vrHudCtx.fillStyle = '#33ff99';
-    vrHudCtx.fillText(`${state.cursor.z.toFixed(2)} m`, 180, 140);
-    vrHudCtx.fillStyle = '#00d4ff';
-    vrHudCtx.fillText(`${state.cursor.totalParallax.toFixed(1)} px (Base: ${state.model.baseParallax.toFixed(0)})`, 180, 170);
-
-    // Status Row
-    vrHudCtx.fillStyle = '#d29922';
-    vrHudCtx.font = '15px sans-serif';
-    const datasetLabel = (DATASETS[state.currentDataset] || DATASETS.synth).label;
-    vrHudCtx.fillText(`[${datasetLabel} ${state.model.zoom.toFixed(1)}x] Tool: ${state.activeTool} | Pts: ${state.activeFeature.length} | Done: ${state.completedFeatures.length}`, 25, 205);
-
-    // Interactive Buttons Row
-    hudButtons.forEach(btn => {
-        if (btn.id === 'tool') {
-            btn.text = `Tool: ${state.activeTool.replace('Z', '')}`;
-        } else if (btn.id === 'dataset') {
-            btn.text = (DATASETS[state.currentDataset] || DATASETS.synth).shortLabel;
-        }
-
-        const isHovered = (hoveredHudButton === btn.id);
-
-        vrHudCtx.fillStyle = isHovered ? '#00d4ff' : 'rgba(30, 42, 60, 0.85)';
-        vrHudCtx.strokeStyle = isHovered ? '#ffffff' : 'rgba(0, 212, 255, 0.4)';
-        vrHudCtx.lineWidth = 2;
-        vrHudCtx.beginPath();
-        vrHudCtx.roundRect(btn.x, btn.y, btn.w, btn.h, 8);
-        vrHudCtx.fill();
-        vrHudCtx.stroke();
-
-        vrHudCtx.fillStyle = isHovered ? '#050b14' : (btn.id === 'clear' ? '#f85149' : '#ffffff');
-        vrHudCtx.font = isHovered ? 'bold 14px sans-serif' : '13px sans-serif';
-        vrHudCtx.textAlign = 'center';
-        vrHudCtx.fillText(btn.text, btn.x + btn.w / 2, btn.y + btn.h / 2 + 5);
-        vrHudCtx.textAlign = 'start';
-    });
-
-    // Draw Laser Aiming Dot on HUD
-    if (laserUV) {
-        vrHudCtx.fillStyle = '#ff0055';
-        vrHudCtx.strokeStyle = '#ffffff';
-        vrHudCtx.lineWidth = 2;
-        vrHudCtx.beginPath();
-        vrHudCtx.arc(laserUV.x, laserUV.y, 6, 0, Math.PI * 2);
-        vrHudCtx.fill();
-        vrHudCtx.stroke();
-    }
-
+    renderHud(vrHudCtx, buildHudViewModel(laserUV));
     if (vrHudMesh && vrHudMesh.material.map) {
         vrHudMesh.material.map.needsUpdate = true;
     }
@@ -715,13 +664,8 @@ function handleHudRaycasting(activeSource) {
         const px = uv.x * vrHudCanvas.width;
         const py = (1 - uv.y) * vrHudCanvas.height;
 
-        let foundHover = null;
-        for (const btn of hudButtons) {
-            if (px >= btn.x && px <= btn.x + btn.w && py >= btn.y && py <= btn.y + btn.h) {
-                foundHover = btn.id;
-                break;
-            }
-        }
+        // Pure hit-test (see vr-hud.js). No scene reads, no state mutation.
+        const foundHover = hitTestHudButtons(px, py);
 
         if (hoveredHudButton !== foundHover) {
             hoveredHudButton = foundHover;
