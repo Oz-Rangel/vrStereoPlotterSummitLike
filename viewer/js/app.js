@@ -180,6 +180,8 @@ function handleHudRaycasting(controller) {
     const refs = sceneApi.getRefs();
     if (!refs.vrHudMesh || !controller) {
         sceneApi.setHoveredButton(null);
+        // No HUD to aim at — clear any stale laser reticle.
+        sceneApi.updateVRHudTexture(null);
         return null;
     }
 
@@ -190,10 +192,16 @@ function handleHudRaycasting(controller) {
     const hits = hudRaycaster.intersectObject(refs.vrHudMesh, false);
     if (hits.length === 0) {
         sceneApi.setHoveredButton(null);
+        // Ray left the HUD surface — clear the laser so it doesn't freeze
+        // at its last-known pixel while the controller points elsewhere.
+        sceneApi.updateVRHudTexture(null);
         return null;
     }
     const uv = hits[0].uv;
-    if (!uv) return null;
+    if (!uv) {
+        sceneApi.updateVRHudTexture(null);
+        return null;
+    }
 
     const px = uv.x * HUD_CANVAS_WIDTH;
     const py = (1 - uv.y) * HUD_CANVAS_HEIGHT;

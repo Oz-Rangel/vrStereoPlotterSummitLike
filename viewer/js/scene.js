@@ -82,7 +82,12 @@ export function createScene({ state, getDigitizer }) {
     }
 
     function updateVRHudTexture(laserUV) {
-        if (laserUV !== undefined) lastLaserUV = laserUV;
+        // undefined -> keep previous position
+        // null      -> explicitly clear stale reticle
+        // {x,y}     -> set new position
+        if (laserUV === null) lastLaserUV = null;
+        else if (laserUV !== undefined) lastLaserUV = laserUV;
+
         if (!vrHudCtx) return;
 
         const digitizer = getDigitizer();
