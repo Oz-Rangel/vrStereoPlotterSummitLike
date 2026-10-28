@@ -104,8 +104,9 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0a0d12);
 
 const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 100);
-camera.position.set(0, 1.4, 1.8);
+camera.position.set(0, 1.4, 2.6);
 camera.lookAt(0, 1.2, 0);
+camera.layers.enable(1);              // desktop mono view renders the left-eye plane
 
 scene.add(new THREE.AmbientLight(0xffffff, 1.2));
 
@@ -331,7 +332,20 @@ const clock = new THREE.Clock();
 
 function renderLoop() {
     const dt = Math.min(clock.getDelta(), 0.05);
-    if (renderer.xr.isPresenting) pollVRGamepads(dt);
+    if (renderer.xr.isPresenting) {
+        pollVRGamepads(dt);
+
+        // Route each XR eye camera to its matching plane layer.
+        // Without this, both eye cameras see both planes and the image
+        // ghosts instead of fusing — you get "no 3D".
+        const xrCam = renderer.xr.getCamera();
+        if (xrCam.cameras.length === 2) {
+            xrCam.cameras[0].layers.set(0);
+            xrCam.cameras[0].layers.enable(1);   // left eye = left plane
+            xrCam.cameras[1].layers.set(0);
+            xrCam.cameras[1].layers.enable(2);   // right eye = right plane
+        }
+    }
     renderer.render(scene, camera);
 }
 
@@ -403,7 +417,7 @@ function toggleDataset(target = null) {
 }
 
 function resetWorkstationView() {
-    camera.position.set(0, 1.4, 1.8);
+    camera.position.set(0, 1.4, 2.6);
     camera.lookAt(0, 1.2, 0);
     workstationGroup.position.set(0, 1.2, 0);
     workstationGroup.rotation.set(0, 0, 0);

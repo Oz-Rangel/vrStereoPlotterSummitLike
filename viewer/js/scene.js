@@ -173,14 +173,14 @@ export function createScene({ state, getDigitizer }) {
             map: leftTexture, transparent: true, side: THREE.DoubleSide
         });
         leftPlane = new THREE.Mesh(geo, matL);
-        leftPlane.layers.enable(1);
+        leftPlane.layers.set(1);
         workstationGroup.add(leftPlane);
 
         const matR = new THREE.MeshBasicMaterial({
             map: rightTexture, transparent: true, side: THREE.DoubleSide
         });
         rightPlane = new THREE.Mesh(geo, matR);
-        rightPlane.layers.enable(2);
+        rightPlane.layers.set(2);
         workstationGroup.add(rightPlane);
 
         createStereoWindowFrame();
