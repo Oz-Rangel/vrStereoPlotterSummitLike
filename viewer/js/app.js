@@ -330,9 +330,15 @@ function pollVRGamepads(dt) {
 
 const clock = new THREE.Clock();
 
+let xrNeedsRecenter = false;
+
 function renderLoop() {
     const dt = Math.min(clock.getDelta(), 0.05);
     if (renderer.xr.isPresenting) {
+        if (xrNeedsRecenter) {
+            xrNeedsRecenter = false;
+            recenterWorkstationInVR();
+        }
         pollVRGamepads(dt);
 
         // Route each XR eye camera to its matching plane layer.
@@ -416,11 +422,41 @@ function toggleDataset(target = null) {
     });
 }
 
+function recenterWorkstationInVR() {
+    const xrCam = renderer.xr.getCamera();
+    if (!xrCam) return;
+
+    const headPos = new THREE.Vector3();
+    xrCam.getWorldPosition(headPos);
+
+    const headDir = new THREE.Vector3();
+    xrCam.getWorldDirection(headDir);   // head look direction (-Z of the camera)
+    headDir.y = 0;
+    if (headDir.lengthSq() < 1e-6) return; // looking straight up/down — skip
+    headDir.normalize();
+
+    const dist = 2.0;
+    workstationGroup.position.set(
+        headPos.x + headDir.x * dist,
+        headPos.y - 0.3,                 // slightly below eye level
+        headPos.z + headDir.z * dist
+    );
+    // The plane normal is +Z; yaw it so +Z points back at the user.
+    const yaw = Math.atan2(-headDir.x, -headDir.z);
+    workstationGroup.rotation.set(0, yaw, 0);
+
+    updateSummitPositions();
+}
+
 function resetWorkstationView() {
-    camera.position.set(0, 1.4, 0.6);
-    camera.lookAt(0, 1.2, -2.0);
-    workstationGroup.position.set(0, 1.2, -2.0);
-    workstationGroup.rotation.set(0, 0, 0);
+    if (state.isVR) {
+        recenterWorkstationInVR();
+    } else {
+        camera.position.set(0, 1.4, 0.6);
+        camera.lookAt(0, 1.2, -2.0);
+        workstationGroup.position.set(0, 1.2, -2.0);
+        workstationGroup.rotation.set(0, 0, 0);
+    }
     updateSummitPositions();
 }
 
@@ -439,8 +475,14 @@ function init() {
     const vrBtn = VRButton.createButton(renderer);
     document.getElementById('vr-btn-container').appendChild(vrBtn);
 
-    renderer.xr.addEventListener('sessionstart', () => { state.isVR = true; });
-    renderer.xr.addEventListener('sessionend', () => { state.isVR = false; });
+    renderer.xr.addEventListener('sessionstart', () => {
+        state.isVR = true;
+        xrNeedsRecenter = true;
+    });
+    renderer.xr.addEventListener('sessionend', () => {
+        state.isVR = false;
+        xrNeedsRecenter = false;
+    });
 
     desktopUI.bind();
     setupKeyboardAndMouse({

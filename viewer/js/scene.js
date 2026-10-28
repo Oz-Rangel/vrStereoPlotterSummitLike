@@ -26,8 +26,8 @@ export function createScene({ state, getDigitizer }) {
     const vectorGroupRight = new THREE.Group();
     vectorGroupLeft.layers.set(1);
     vectorGroupRight.layers.set(2);
-    workstationGroup.add(vectorGroupLeft);
-    workstationGroup.add(vectorGroupRight);
+    // NOTE: no workstationGroup.add() here — each group is a child of its eye's plane.
+    // buildStereoPlanes() (re)attaches them.
 
     let stereoWindowFrame = null;
     let centralMark = null;
@@ -148,12 +148,14 @@ export function createScene({ state, getDigitizer }) {
 
     function buildStereoPlanes() {
         if (leftPlane) {
+            leftPlane.remove(vectorGroupLeft);      // detach before dispose
             workstationGroup.remove(leftPlane);
             leftPlane.geometry.dispose();
             leftPlane.material.dispose();
             leftPlane = null;
         }
         if (rightPlane) {
+            rightPlane.remove(vectorGroupRight);    // detach before dispose
             workstationGroup.remove(rightPlane);
             rightPlane.geometry.dispose();
             rightPlane.material.dispose();
@@ -174,6 +176,7 @@ export function createScene({ state, getDigitizer }) {
         });
         leftPlane = new THREE.Mesh(geo, matL);
         leftPlane.layers.set(1);
+        leftPlane.add(vectorGroupLeft);             // reattach
         workstationGroup.add(leftPlane);
 
         const matR = new THREE.MeshBasicMaterial({
@@ -181,6 +184,7 @@ export function createScene({ state, getDigitizer }) {
         });
         rightPlane = new THREE.Mesh(geo, matR);
         rightPlane.layers.set(2);
+        rightPlane.add(vectorGroupRight);           // reattach
         workstationGroup.add(rightPlane);
 
         createStereoWindowFrame();
