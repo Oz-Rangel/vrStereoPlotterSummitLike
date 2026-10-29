@@ -63,7 +63,13 @@ export function createDigitizerBridge({
 
         const lineL = new THREE.Line(
             new THREE.BufferGeometry().setFromPoints(pointsL),
-            new THREE.LineBasicMaterial({ color: 0x00d4ff, linewidth: 2, depthTest: false })
+            new THREE.LineBasicMaterial({
+                color: 0x00d4ff,
+                linewidth: 2,
+                depthTest: false,
+                depthWrite: false,
+                transparent: true
+            })
         );
         lineL.layers.set(1);
         lineL.renderOrder = 500;
@@ -72,7 +78,13 @@ export function createDigitizerBridge({
 
         const lineR = new THREE.Line(
             new THREE.BufferGeometry().setFromPoints(pointsR),
-            new THREE.LineBasicMaterial({ color: 0x00d4ff, linewidth: 2, depthTest: false })
+            new THREE.LineBasicMaterial({
+                color: 0x00d4ff,
+                linewidth: 2,
+                depthTest: false,
+                depthWrite: false,
+                transparent: true
+            })
         );
         lineR.layers.set(2);
         lineR.renderOrder = 500;
@@ -90,14 +102,26 @@ export function createDigitizerBridge({
         const local = localsFor(vertex);
         const geo = new THREE.CircleGeometry(0.008, 16);
 
-        const matL = new THREE.MeshBasicMaterial({ color: 0x33ff99, depthTest: false, side: THREE.DoubleSide });
+        const matL = new THREE.MeshBasicMaterial({
+            color: 0x33ff99,
+            depthTest: false,
+            depthWrite: false,
+            transparent: true,
+            side: THREE.DoubleSide
+        });
         const meshL = new THREE.Mesh(geo, matL);
         meshL.position.set(local.left.x, local.left.y, 0.002);
         meshL.layers.set(1);
         meshL.renderOrder = 500;
         groups.left.add(meshL);
 
-        const matR = new THREE.MeshBasicMaterial({ color: 0x33ff99, depthTest: false, side: THREE.DoubleSide });
+        const matR = new THREE.MeshBasicMaterial({
+            color: 0x33ff99,
+            depthTest: false,
+            depthWrite: false,
+            transparent: true,
+            side: THREE.DoubleSide
+        });
         const meshR = new THREE.Mesh(geo, matR);
         meshR.position.set(local.right.x, local.right.y, 0.002);
         meshR.layers.set(2);
